@@ -1,65 +1,377 @@
 {
-  "watchlist": ["BTCUSDT"],
-  "default_timeframe": "1",
-
-  "strategy": {
-    "name": "10-Second Momentum Scalper",
-    "sources": [
-      "Price momentum — buy if last close > previous close (green candle)",
-      "RSI filter — only trade when RSI is not at an extreme (30–70 range)"
+  "_meta": {
+    "strategy": "ICC — Indication, Correction, Continuation",
+    "version": "4.0-GOLD",
+    "last_updated": "2026-09-09",
+    "instrument_scope": "XAUUSD ONLY",
+    "role": "Identify and report the user's ICC conditions from TradingView. Do not predict, force setups, or place trades.",
+    "master_sequence": "H4 structure → protected HL/LH break → H4 CHoCH → first H4 BOS → H4 BOS OB → next H1 BOS → H1 BOS OB → correction → OB tap/liquidity sweep → continuation entry."
+  },
+  "instrument_scope": {
+    "allowed_instruments": [
+      "XAUUSD"
     ],
-    "primary_timeframes": [
-      "1-minute (signal source)",
-      "10-second execution loop"
+    "restriction": "Do not apply this model to NAS100, GBPJPY, BTCUSD, or other instruments until the Gold model is deliberately validated and expanded."
+  },
+  "core_rules": {
+    "philosophy": "Structure → POI → structural shift → BOS → correction → continuation.",
+    "rules": [
+      "A POI is a location, not an entry.",
+      "Do not predict that a POI must hold.",
+      "Do not enter on CHoCH alone.",
+      "Do not enter on the first BOS itself.",
+      "Do not chase an expanding move.",
+      "Do not trade unclear range/consolidation structure.",
+      "Do not treat every red or green candle as an Order Block.",
+      "A liquidity sweep is context, not an automatic entry.",
+      "If a required condition is missing, report WAIT."
     ]
   },
-
-  "indicators": {
-    "rsi_14": "Momentum filter. Only trade when RSI is between 30–70 (avoid extremes).",
-    "price_momentum": "Compare last close vs previous close. Up = long signal. Down = short signal."
-  },
-
-  "bias_criteria": {
-    "bullish": [
-      "Last 1-min candle closed higher than the one before it",
-      "RSI is between 30 and 70"
+  "poi_framework": {
+    "source_timeframes": [
+      "Daily",
+      "H4"
     ],
-    "bearish": [
-      "Last 1-min candle closed lower than the one before it",
-      "RSI is between 30 and 70"
-    ],
-    "neutral": [
-      "RSI is above 70 (overbought — skip)",
-      "RSI is below 30 (oversold — skip)",
-      "Candle close change is less than 0.05% (chop — skip)"
+    "purpose": "Identify areas where price may react.",
+    "buy_poi": "Use the relevant swing high to swing low range/Fibonacci to identify the buy POI.",
+    "sell_poi": "Use the relevant swing low to swing high range/Fibonacci to identify the sell POI.",
+    "rules": [
+      "Use significant clean swings.",
+      "Multiple POIs may be stacked.",
+      "When price reaches a POI, focus on that area but wait for structure.",
+      "If price breaks or ignores the POI, reassess rather than forcing the original thesis."
     ]
   },
-
-  "entry_rules": {
-    "long": [
-      "Last close > previous close by at least 0.05%",
-      "RSI between 30 and 70",
-      "Enter market buy immediately"
+  "timeframe_hierarchy": {
+    "daily": {
+      "role": "Macro context and POIs",
+      "tasks": [
+        "Read broad structure",
+        "Identify significant swings",
+        "Draw major POIs",
+        "Mark major external liquidity"
+      ]
+    },
+    "H4": {
+      "role": "Primary structural decision timeframe",
+      "tasks": [
+        "Identify HH/HL bullish structure or LH/LL bearish structure.",
+        "Identify the protected HL or protected LH.",
+        "Monitor the protected level for a break.",
+        "Confirm H4 CHoCH after the protected level breaks.",
+        "Wait for the first H4 BOS after CHoCH.",
+        "Identify the Order Block associated with that first H4 BOS."
+      ]
+    },
+    "H1": {
+      "role": "Primary setup-development and executable structure timeframe",
+      "tasks": [
+        "After the first H4 BOS, drop to H1.",
+        "Maintain the H4-confirmed direction.",
+        "Wait for the next H1 BOS in that direction.",
+        "Identify the clearer H1 BOS Order Block.",
+        "Do not enter immediately on the H1 BOS.",
+        "Wait for correction into the relevant OB and/or liquidity."
+      ]
+    },
+    "M15": {
+      "role": "Correction and entry-location refinement",
+      "tasks": [
+        "Study the correction after the H1 BOS.",
+        "Identify correction swings.",
+        "Monitor where the correction terminates.",
+        "Monitor H1/H4 OB taps and relevant liquidity sweeps."
+      ]
+    },
+    "M5": {
+      "role": "Optional entry refinement",
+      "tasks": [
+        "Refine a valid H1/M15 setup only",
+        "Never create an independent thesis"
+      ]
+    },
+    "M1": {
+      "role": "Optional precision refinement",
+      "tasks": [
+        "Refine execution only after the higher-timeframe setup is valid",
+        "Do not override H4/H1 structure"
+      ]
+    }
+  },
+  "structure_rules": {
+    "bullish": {
+      "sequence": "HH → HL → HH → HL",
+      "protected_level": "Most recent meaningful HL protecting the bullish leg.",
+      "shift": "Break of protected HL produces the H4 bearish CHoCH."
+    },
+    "bearish": {
+      "sequence": "LH → LL → LH → LL",
+      "protected_level": "Most recent meaningful LH protecting the bearish leg.",
+      "shift": "Break of protected LH produces the H4 bullish CHoCH."
+    },
+    "clarity_rule": "Use meaningful external swings. If structure is unclear, NO TRADE."
+  },
+  "h4_structural_shift": {
+    "bearish_setup": [
+      "Start with clear H4 bullish structure.",
+      "Identify protected HL.",
+      "Protected HL breaks.",
+      "Confirm H4 bearish CHoCH.",
+      "DO NOT ENTER.",
+      "Wait for the first confirmed H4 bearish BOS.",
+      "The H4 BOS confirms the new bearish direction.",
+      "Identify the bearish H4 BOS Order Block."
     ],
-    "short": [
-      "Last close < previous close by at least 0.05%",
-      "RSI between 30 and 70",
-      "Enter market sell immediately"
+    "bullish_setup": [
+      "Start with clear H4 bearish structure.",
+      "Identify protected LH.",
+      "Protected LH breaks.",
+      "Confirm H4 bullish CHoCH.",
+      "DO NOT ENTER.",
+      "Wait for the first confirmed H4 bullish BOS.",
+      "The H4 BOS confirms the new bullish direction.",
+      "Identify the bullish H4 BOS Order Block."
+    ],
+    "rule": "H4 CHoCH identifies the structural change; H4 BOS confirms the new direction. Neither is an automatic entry."
+  },
+  "h1_setup": {
+    "after_h4_bos": [
+      "Drop to H1.",
+      "Keep the H4-confirmed directional bias.",
+      "Wait for the next H1 BOS in the H4 direction.",
+      "Identify the H1 BOS Order Block created by the displacement producing that BOS.",
+      "Wait for correction.",
+      "Monitor the H1/H4 Order Block and relevant liquidity.",
+      "Prepare entry only when price interacts with the relevant location and returns toward the confirmed direction."
+    ],
+    "bearish": "H4 bearish CHoCH → H4 bearish BOS → H4 bearish BOS OB → next H1 bearish BOS → H1 bearish BOS OB → correction → OB tap/liquidity sweep → sell continuation.",
+    "bullish": "H4 bullish CHoCH → H4 bullish BOS → H4 bullish BOS OB → next H1 bullish BOS → H1 bullish BOS OB → correction → OB tap/liquidity sweep → buy continuation."
+  },
+  "order_block_rules": {
+    "definition": "An Order Block must be structurally associated with the displacement that produced a confirmed BOS.",
+    "bullish": "Relevant bearish candle/base immediately preceding the bullish displacement that produced the BOS.",
+    "bearish": "Relevant bullish candle/base immediately preceding the bearish displacement that produced the BOS.",
+    "quality_filter": [
+      "Must be linked to a confirmed BOS.",
+      "Prefer clear displacement.",
+      "Do not label every opposing-colour candle as an OB.",
+      "Do not assume an OB will hold."
     ]
   },
-
-  "exit_rules": [
-    "Exit automatically after 10 seconds (next loop tick closes previous position)",
-    "No manual exit management — pure time-based scalp"
+  "correction": {
+    "purpose": "The correction creates the opportunity to join the established direction.",
+    "bearish": {
+      "expected_structure": "Temporary HH/HL movement against the established bearish direction.",
+      "monitor": [
+        "H1 bearish BOS OB",
+        "H4 bearish BOS OB",
+        "Buy-side liquidity",
+        "Relevant session/swing highs"
+      ],
+      "termination_evidence": [
+        "OB tap",
+        "Relevant liquidity sweep",
+        "Evidence of return toward bearish direction"
+      ]
+    },
+    "bullish": {
+      "expected_structure": "Temporary LL/LH movement against the established bullish direction.",
+      "monitor": [
+        "H1 bullish BOS OB",
+        "H4 bullish BOS OB",
+        "Sell-side liquidity",
+        "Relevant session/swing lows"
+      ],
+      "termination_evidence": [
+        "OB tap",
+        "Relevant liquidity sweep",
+        "Evidence of return toward bullish direction"
+      ]
+    },
+    "important": "There is no single fixed psychological price level that ends every correction. A previous high/low alone is insufficient. Use location plus structural behaviour."
+  },
+  "liquidity": {
+    "levels": [
+      "Previous Day High",
+      "Previous Day Low",
+      "Asian High",
+      "Asian Low",
+      "London High",
+      "London Low",
+      "New York High",
+      "New York Low",
+      "Equal Highs",
+      "Equal Lows",
+      "Meaningful swing highs/lows"
+    ],
+    "rule": "A later session may sweep a prior session high/low. Treat the sweep as relevant only when it occurs within the established ICC context.",
+    "warning": "Do not reverse the H4 thesis solely because of an LTF liquidity sweep."
+  },
+  "entry_model": {
+    "master_rule": "Entry occurs only after H4 structure has shifted, H4 BOS is confirmed, H1 BOS is confirmed, correction occurs, and price interacts with the relevant OB and/or liquidity before returning toward the confirmed direction.",
+    "bearish": {
+      "sequence": [
+        "H4 bearish CHoCH confirmed",
+        "First H4 bearish BOS confirmed",
+        "H4 bearish BOS OB identified",
+        "Next H1 bearish BOS confirmed",
+        "H1 bearish BOS OB identified",
+        "Correction develops",
+        "Price taps relevant OB and/or sweeps buy-side liquidity",
+        "Price returns toward bearish direction",
+        "Prepare sell-stop entry"
+      ],
+      "sl": "Above the relevant correction/CHoCH high. For a contingency entry after a subsequent BOS, use the first BOS high specified by the user's rule."
+    },
+    "bullish": {
+      "sequence": [
+        "H4 bullish CHoCH confirmed",
+        "First H4 bullish BOS confirmed",
+        "H4 bullish BOS OB identified",
+        "Next H1 bullish BOS confirmed",
+        "H1 bullish BOS OB identified",
+        "Correction develops",
+        "Price taps relevant OB and/or sweeps sell-side liquidity",
+        "Price returns toward bullish direction",
+        "Prepare buy-stop entry"
+      ],
+      "sl": "Below the relevant correction/CHoCH low. For a contingency entry after a subsequent BOS, use the first BOS low specified by the user's rule."
+    }
+  },
+  "contingency_entry": {
+    "rule": "If the primary entry is missed, never chase. Wait for the next valid BOS, identify its Order Block, wait for its correction and relevant OB/liquidity interaction, then reassess the continuation entry.",
+    "bearish": "Missed short → next bearish BOS → new bearish BOS OB → correction → OB/liquidity interaction → next valid short.",
+    "bullish": "Missed long → next bullish BOS → new bullish BOS OB → correction → OB/liquidity interaction → next valid long."
+  },
+  "repeating_icc": {
+    "sequence": "Indication → Correction → Continuation → new Indication → new Correction → new Continuation.",
+    "rule": "Continue recognising valid ICC cycles while higher-timeframe structure remains intact. An opposite higher-timeframe CHoCH requires reassessment.",
+    "no_trade": "Stop recognising entries when structure becomes range/consolidation or the required sequence is incomplete."
+  },
+  "alert_protocol": {
+    "purpose": "Report structural events so the user can perform lower-timeframe analysis manually.",
+    "events": [
+      [
+        "H4_PROTECTED_LEVEL_BROKEN",
+        "H4 protected HL/LH broken. Monitor for CHoCH.",
+        "NO"
+      ],
+      [
+        "H4_CHOCH_CONFIRMED",
+        "H4 CHoCH confirmed. Do not enter. Wait for first H4 BOS.",
+        "NO"
+      ],
+      [
+        "H4_FIRST_BOS_CONFIRMED",
+        "First H4 BOS confirmed. Identify H4 BOS Order Block and drop to H1.",
+        "NO"
+      ],
+      [
+        "H4_BOS_OB_CREATED",
+        "H4 BOS Order Block identified. Monitor during correction.",
+        "WAIT"
+      ],
+      [
+        "H1_NEXT_BOS_CONFIRMED",
+        "Next H1 BOS confirmed in H4 direction. Identify H1 BOS Order Block.",
+        "NO"
+      ],
+      [
+        "H1_BOS_OB_CREATED",
+        "H1 BOS Order Block identified. Wait for correction.",
+        "WAIT"
+      ],
+      [
+        "CORRECTION_ACTIVE",
+        "Correction is active. Do not enter mid-correction.",
+        "NO"
+      ],
+      [
+        "OB_TAPPED",
+        "Relevant Order Block tapped. Monitor for return toward confirmed direction.",
+        "WAIT"
+      ],
+      [
+        "LIQUIDITY_SWEPT",
+        "Relevant liquidity swept. Verify alignment with ICC sequence.",
+        "WAIT"
+      ],
+      [
+        "ENTRY_READY",
+        "Structural sequence and entry location are aligned. Manual execution review required.",
+        "READY_FOR_MANUAL_REVIEW"
+      ],
+      [
+        "SETUP_INVALIDATED",
+        "Structural invalidation level broken. Cancel setup and reassess.",
+        "NO"
+      ],
+      [
+        "RANGE_NO_TRADE",
+        "Structure is ranging/unclear. No trade.",
+        "NO"
+      ]
+    ],
+    "required_report_fields": [
+      "instrument",
+      "timeframe",
+      "direction",
+      "event",
+      "price_level_if_available",
+      "what_happened",
+      "what_is_required_next",
+      "entry_status"
+    ]
+  },
+  "no_trade_conditions": [
+    "Instrument is not XAUUSD.",
+    "H4 structure is unclear.",
+    "Protected H4 HL/LH cannot be identified.",
+    "Required H4 CHoCH has not occurred.",
+    "First H4 BOS has not occurred.",
+    "Next H1 BOS has not occurred.",
+    "Correction is still developing.",
+    "No relevant OB or liquidity interaction.",
+    "Entry would require chasing.",
+    "Market is ranging or consolidating.",
+    "Structure conflicts across the required hierarchy.",
+    "Setup cannot be described as a complete ICC sequence."
   ],
-
-  "risk_rules": [
-    "Fixed trade size: 1% of portfolio per trade",
-    "Maximum trade size: $3.00",
-    "Maximum 6 trades per 60-second run",
-    "No stop loss — exit is time-based at next tick",
-    "For demo purposes only — minimum BitGet order size may apply"
-  ],
-
-  "notes": "Demo strategy for YouTube video. Runs 6 trades over 60 seconds, one every 10 seconds. Signal is simple price momentum on 1-min candles with RSI sanity check."
+  "risk_safeguards": {
+    "assistant_rules": [
+      "Do not promise a winning outcome.",
+      "Do not encourage revenge trading or recovery trading.",
+      "Do not increase risk because of a previous loss.",
+      "Do not convert an incomplete setup into a trade.",
+      "Always distinguish analysis from execution.",
+      "The user must independently verify any alert before placing an order."
+    ]
+  },
+  "output_template": {
+    "order": [
+      "Instrument",
+      "H4 structure",
+      "Protected HL/LH",
+      "POI interaction",
+      "H4 CHoCH",
+      "H4 first BOS",
+      "H4 BOS Order Block",
+      "H1 next BOS",
+      "H1 BOS Order Block",
+      "Correction",
+      "Liquidity",
+      "Entry status",
+      "Invalidation",
+      "Reason for NO TRADE if applicable"
+    ],
+    "status_values": [
+      "CONFIRMED",
+      "NOT CONFIRMED",
+      "WAITING",
+      "INVALIDATED",
+      "NO TRADE",
+      "READY_FOR_MANUAL_REVIEW"
+    ]
+  },
+  "gold_master_rule": "H4 CHoCH identifies the change. H4 BOS confirms the new direction. H4 BOS creates the HTF Order Block. H1 BOS establishes the clearer executable structure and H1 Order Block. Correction creates the opportunity. OB tap and/or liquidity sweep provides location. Entry occurs only as price returns toward the confirmed direction. If the sequence is incomplete, WAIT."
 }

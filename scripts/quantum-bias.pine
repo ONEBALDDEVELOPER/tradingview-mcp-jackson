@@ -1,0 +1,204 @@
+// @version=6
+indicator("Quantum Market Bias Engine", overlay=true, max_labels_count=100, max_lines_count=100, max_boxes_count=50)
+
+// ╔══════════════════════════════════════╗
+// ║            GENERAL SETTINGS          ║
+// ╚══════════════════════════════════════╝
+useSupportResistance = input.bool(true, "Enable SR Engine", group="General Settings")
+useBiasEngine = input.bool(true, "Enable Bias Engine", group="General Settings")
+useMTFMatrix = input.bool(true, "Enable MTF Dashboard", group="General Settings")
+useStructure = input.bool(true, "Enable Market Structure", group="General Settings")
+
+// ╔══════════════════════════════════════╗
+// ║            MTF SETTINGS              ║
+// ╚══════════════════════════════════════╝
+var string[] mtfTimeframes = array.from("1", "5", "15", "60", "240", "D")
+
+// ╔══════════════════════════════════════╗
+// ║            TREND SETTINGS            ║
+// ╚══════════════════════════════════════╝
+trendEmaFast = input.int(21, "Fast EMA")
+trendEmaSlow = input.int(55, "Slow EMA")
+trendAdxLength = input.int(14, "ADX Length")
+
+// ╔══════════════════════════════════════╗
+// ║              COLORS                  ║
+// ╚══════════════════════════════════════╝
+colorBull = color.new(color.green, 0)
+colorBear = color.new(color.red, 0)
+colorNeutral = color.new(color.yellow, 0)
+colorSupport = color.new(color.blue, 0)
+colorResistance = color.new(color.orange, 0)
+
+// ╔══════════════════════════════════════╗
+// ║         MARKET CALCULATIONS          ║
+// ╚══════════════════════════════════════╝
+emaFast = ta.ema(close, trendEmaFast)
+emaSlow = ta.ema(close, trendEmaSlow)
+atrValue = ta.atr(14)
+rsiValue = ta.rsi(close, 14)
+[diplus, diminus, adxValue] = ta.dmi(trendAdxLength, trendAdxLength)
+vwapValue = ta.vwap(close)
+volAverage = ta.sma(volume, 20)
+volumeDelta = volAverage != 0 ? volume / volAverage : 0
+
+// ╔══════════════════════════════════════╗
+// ║         STRUCTURE ENGINE             ║
+// ╚══════════════════════════════════════╝
+structurePivotDepth = input.int(5, "Pivot Depth")
+
+pivotHigh = ta.pivothigh(high, structurePivotDepth, structurePivotDepth)
+pivotLow = ta.pivotlow(low, structurePivotDepth, structurePivotDepth)
+
+pivotHighDetected = not na(pivotHigh)
+pivotLowDetected = not na(pivotLow)
+
+pivotHighPrice = ta.valuewhen(pivotHighDetected, high[structurePivotDepth], 0)
+pivotLowPrice = ta.valuewhen(pivotLowDetected, low[structurePivotDepth], 0)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+
+if pivotHighDetected
+    lastSwingHigh := pivotHighPrice
+
+if pivotLowDetected
+    lastSwingLow := pivotLowPrice
+
+bullBos = not na(lastSwingHigh) and close > lastSwingHigh
+bearBos = not na(lastSwingLow) and close < lastSwingLow
+
+// ╔══════════════════════════════════════╗
+// ║           BIAS ENGINE                ║
+// ╚══════════════════════════════════════╝
+f_biasCalc() =>
+    emaScore = close > emaFast and emaFast > emaSlow ? 1.0 : close < emaFast and emaFast < emaSlow ? 0.0 : 0.5
+
+    rsiScore = math.max(0.0, math.min(1.0, (rsiValue - 30.0) / 40.0))
+
+    vwapScore = close > vwapValue ? 1.0 : 0.0
+
+    structureScore = bullBos ? 1.0 : bearBos ? 0.0 : 0.5
+
+    total = emaScore + rsiScore + vwapScore + structureScore
+
+    bull = (total / 4.0) * 100.0
+    bear = 100.0 - bull
+
+    [bull, bear]
+
+[bullBiasRaw, bearBiasRaw] = f_biasCalc()
+
+bullBias = ta.ema(bullBiasRaw, 4)
+bearBias = ta.ema(bearBiasRaw, 4)
+
+// ╔══════════════════════════════════════╗
+// ║         SUPPORT / RESISTANCE         ║
+// ╚══════════════════════════════════════╝
+var line supportLine = na
+var line resistanceLine = na
+
+if useSupportResistance
+    if pivotLowDetected
+        if not na(supportLine)
+            line.delete(supportLine)
+
+        supportLine := line.new(
+             x1 = bar_index - structurePivotDepth,
+             y1 = pivotLowPrice,
+             x2 = bar_index,
+             y2 = pivotLowPrice,
+             extend = extend.right,
+             color = colorSupport,
+             width = 2
+         )
+
+    if pivotHighDetected
+        if not na(resistanceLine)
+            line.delete(resistanceLine)
+
+        resistanceLine := line.new(
+             x1 = bar_index - structurePivotDepth,
+             y1 = pivotHighPrice,
+             x2 = bar_index,
+             y2 = pivotHighPrice,
+             extend = extend.right,
+             color = colorResistance,
+             width = 2
+         )
+
+// ╔══════════════════════════════════════╗
+// ║           TREND ENGINE               ║
+// ╚══════════════════════════════════════╝
+emaSlope = emaFast - emaFast[1]
+
+trendState = emaSlope > 0 ? "Bullish" : "Bearish"
+trendColor = emaSlope > 0 ? colorBull : colorBear
+
+bgcolor(color.new(trendColor, 92))
+
+// ╔══════════════════════════════════════╗
+// ║             MTF ENGINE               ║
+// ╚══════════════════════════════════════╝
+// Pre-compute all 6 TF directions outside any conditional (Pine v6 requirement)
+_emaExpr = close > ta.ema(close, trendEmaFast) ? 1 : -1
+mtfDir1  = request.security(syminfo.tickerid, "1",   _emaExpr)
+mtfDir5  = request.security(syminfo.tickerid, "5",   _emaExpr)
+mtfDir15 = request.security(syminfo.tickerid, "15",  _emaExpr)
+mtfDir60 = request.security(syminfo.tickerid, "60",  _emaExpr)
+mtfDir4h = request.security(syminfo.tickerid, "240", _emaExpr)
+mtfDirD  = request.security(syminfo.tickerid, "D",   _emaExpr)
+
+var table biasTable = table.new(position.bottom_right, 3, 7,
+     bgcolor=color.new(#0D1117, 70), border_color=color.new(color.white, 80), border_width=1)
+
+if barstate.islast and useMTFMatrix
+    HDR = color.new(#1E2A3A, 50)
+    table.cell(biasTable, 0, 0, "TF",    text_color=color.silver, text_size=size.small, bgcolor=HDR)
+    table.cell(biasTable, 1, 0, "Bias",  text_color=color.silver, text_size=size.small, bgcolor=HDR)
+    table.cell(biasTable, 2, 0, "State", text_color=color.silver, text_size=size.small, bgcolor=HDR)
+
+    tfLabels = array.from("1m", "5m", "15m", "1H", "4H", "D")
+    tfDirs   = array.from(mtfDir1, mtfDir5, mtfDir15, mtfDir60, mtfDir4h, mtfDirD)
+
+    for i = 0 to 5
+        dir   = array.get(tfDirs, i)
+        lbl   = array.get(tfLabels, i)
+        state = dir == 1 ? "Bull" : "Bear"
+        icon  = dir == 1 ? "🟢" : "🔴"
+        clr   = dir == 1 ? colorBull : colorBear
+        table.cell(biasTable, 0, i + 1, lbl,   text_color=color.silver, text_size=size.small)
+        table.cell(biasTable, 1, i + 1, icon,  text_color=clr,          text_size=size.normal)
+        table.cell(biasTable, 2, i + 1, state, text_color=clr,          text_size=size.small)
+
+// ╔══════════════════════════════════════╗
+// ║            LABEL ENGINE              ║
+// ╚══════════════════════════════════════╝
+var label biasLabel = na
+
+if useBiasEngine
+
+    biasText = "Bull: " + str.tostring(math.round(bullBias)) + "%\nBear: " + str.tostring(math.round(bearBias)) + "%"
+
+    if na(biasLabel)
+        biasLabel := label.new(
+             bar_index,
+             high,
+             biasText,
+             style = label.style_label_down,
+             textcolor = color.white,
+             color = color.new(trendColor, 75)
+         )
+    else
+        label.set_xy(biasLabel, bar_index, high)
+        label.set_text(biasLabel, biasText)
+        label.set_color(biasLabel, color.new(trendColor, 75))
+
+// ╔══════════════════════════════════════╗
+// ║              ALERTS                  ║
+// ╚══════════════════════════════════════╝
+bullAlert = bullBias > 65
+bearAlert = bearBias > 65
+
+alertcondition(bullAlert, title="Bullish Bias", message="Bullish bias detected")
+alertcondition(bearAlert, title="Bearish Bias", message="Bearish bias detected")

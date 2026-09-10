@@ -1,0 +1,398 @@
+// @version=6
+indicator("ICC Framework — TradesBySci", overlay=true, max_lines_count=200, max_labels_count=200, max_boxes_count=200)
+
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+swLen    = input.int   (5,    "Swing Length",               group="Structure",  minval=2, maxval=20)
+showBOS  = input.bool  (true, "Show BOS / CHoCH",           group="Structure")
+showFVG  = input.bool  (true, "Show Fair Value Gaps",        group="FVG")
+fvgExt   = input.int   (40,   "FVG Extend (bars)",           group="FVG",       minval=5, maxval=300)
+showOB   = input.bool  (true, "Show Order Blocks",           group="OB")
+obExt    = input.int   (60,   "OB Extend (bars)",            group="OB",        minval=5, maxval=500)
+showLiq  = input.bool  (true, "Show Equal H/L (Liquidity)",  group="Liquidity")
+liqPct   = input.float (0.05, "EQH/L Tolerance (% price)",  group="Liquidity", minval=0.01, step=0.01)
+showSR   = input.bool  (true, "Show S/R Zones",              group="S/R Zones")
+srMinT   = input.int   (3,    "Min Touches to Draw",         group="S/R Zones", minval=2, maxval=6)
+srTolMul = input.float (0.3,  "Zone Tolerance (× ATR)",      group="S/R Zones", minval=0.1, maxval=3.0, step=0.1)
+srMaxZ   = input.int   (7,    "Max Zones to Display",        group="S/R Zones", minval=3,  maxval=20)
+showSess = input.bool  (true, "Show Sessions",               group="Sessions")
+showDash = input.bool  (true, "Show Dashboard",              group="Display")
+showSig  = input.bool  (true, "Entry Signals",               group="Display")
+lookback = input.int   (300,  "Max Lookback (bars)",          group="Display", minval=50, maxval=1000)
+
+// Auto-tighten lookback on higher timeframes to avoid drawing limit overflows
+tfSecs   = timeframe.in_seconds()
+tfLB     = tfSecs >= 86400 ? math.min(lookback, 60) :   // Daily+: max 60 bars
+           tfSecs >= 14400 ? math.min(lookback, 100) :  // 4H: max 100 bars
+           tfSecs >= 3600  ? math.min(lookback, 150) :  // 1H: max 150 bars
+           lookback                                      // M15 and below: use setting
+
+// ─── PALETTE ──────────────────────────────────────────────────────────────────
+BULL   = #26a69a
+BEAR   = #ef5350
+GOLD   = #FFD700
+PURPLE = #9C27B0
+
+// ─── ATR ──────────────────────────────────────────────────────────────────────
+atr = ta.atr(14)
+
+// ─── SWING DETECTION ──────────────────────────────────────────────────────────
+ph = ta.pivothigh(swLen, swLen)
+pl = ta.pivotlow (swLen, swLen)
+
+var float lastSH    = na
+var int   lastSHBar = na
+var float prevSH    = na
+var float lastSL    = na
+var int   lastSLBar = na
+var float prevSL    = na
+
+if not na(ph)
+    prevSH    := lastSH
+    lastSH    := ph
+    lastSHBar := bar_index - swLen
+
+if not na(pl)
+    prevSL    := lastSL
+    lastSL    := pl
+    lastSLBar := bar_index - swLen
+
+plotshape(ph, "Swing High", shape.circle, location.abovebar, color.new(BEAR, 20), size=size.tiny, offset=-swLen)
+plotshape(pl, "Swing Low",  shape.circle, location.belowbar, color.new(BULL, 20), size=size.tiny, offset=-swLen)
+
+// ─── MARKET STRUCTURE — BOS / CHOCH ──────────────────────────────────────────
+var string bias    = "neutral"
+var string lastEvt = "—"
+
+bosU   = not na(lastSH) and close > lastSH and close[1] <= lastSH
+bosD   = not na(lastSL) and close < lastSL and close[1] >= lastSL
+chochU = bosU and bias == "bearish"
+chochD = bosD and bias == "bullish"
+
+if bosU
+    bias    := "bullish"
+    lastEvt := chochU ? "CHoCH ↑" : "BOS ↑"
+    if showBOS and bar_index >= last_bar_index - tfLB
+        clr = chochU ? BULL : color.new(BULL, 45)
+        sz  = chochU ? size.small : size.tiny
+        label.new(bar_index, lastSH, lastEvt, color=clr, textcolor=color.white, style=label.style_label_up, size=sz)
+
+if bosD
+    bias    := "bearish"
+    lastEvt := chochD ? "CHoCH ↓" : "BOS ↓"
+    if showBOS and bar_index >= last_bar_index - tfLB
+        clr = chochD ? BEAR : color.new(BEAR, 45)
+        sz  = chochD ? size.small : size.tiny
+        label.new(bar_index, lastSL, lastEvt, color=clr, textcolor=color.white, style=label.style_label_down, size=sz)
+
+// ─── FAIR VALUE GAPS ──────────────────────────────────────────────────────────
+bullFVG = low  > high[2] and (low  - high[2]) > atr * 0.05
+bearFVG = high < low[2]  and (low[2] - high)  > atr * 0.05
+
+if showFVG and bar_index >= last_bar_index - tfLB
+    if bullFVG
+        box.new(bar_index - 2, low, bar_index + fvgExt, high[2],
+            border_color=color.new(BULL, 55), bgcolor=color.new(BULL, 88), border_width=1)
+    if bearFVG
+        box.new(bar_index - 2, low[2], bar_index + fvgExt, high,
+            border_color=color.new(BEAR, 55), bgcolor=color.new(BEAR, 88), border_width=1)
+
+// ─── ORDER BLOCKS ─────────────────────────────────────────────────────────────
+if showOB and bosU and bar_index >= last_bar_index - tfLB
+    for i = 1 to 15
+        if close[i] < open[i]
+            box.new(bar_index - i, high[i], bar_index + obExt, low[i],
+                border_color=color.new(BULL, 20), bgcolor=color.new(BULL, 83), border_width=1)
+            label.new(bar_index - i, high[i], "Bull OB",
+                color=color.new(BULL, 20), textcolor=color.white,
+                style=label.style_label_down, size=size.tiny)
+            break
+
+if showOB and bosD and bar_index >= last_bar_index - tfLB
+    for i = 1 to 15
+        if close[i] > open[i]
+            box.new(bar_index - i, high[i], bar_index + obExt, low[i],
+                border_color=color.new(BEAR, 20), bgcolor=color.new(BEAR, 83), border_width=1)
+            label.new(bar_index - i, low[i], "Bear OB",
+                color=color.new(BEAR, 20), textcolor=color.white,
+                style=label.style_label_up, size=size.tiny)
+            break
+
+// ─── EQUAL HIGHS / LOWS ───────────────────────────────────────────────────────
+liqTol = close * (liqPct / 100)
+
+if showLiq and not na(ph) and not na(prevSH) and bar_index >= last_bar_index - tfLB
+    if math.abs(ph - prevSH) <= liqTol
+        line.new(lastSHBar, lastSH, bar_index + 25, lastSH,
+            color=color.new(BEAR, 40), style=line.style_dashed, width=1)
+        label.new(bar_index - swLen, ph, "EQH",
+            color=color.new(BEAR, 40), textcolor=color.white,
+            style=label.style_label_down, size=size.tiny)
+
+if showLiq and not na(pl) and not na(prevSL) and bar_index >= last_bar_index - tfLB
+    if math.abs(pl - prevSL) <= liqTol
+        line.new(lastSLBar, lastSL, bar_index + 25, lastSL,
+            color=color.new(BULL, 40), style=line.style_dashed, width=1)
+        label.new(bar_index - swLen, pl, "EQL",
+            color=color.new(BULL, 40), textcolor=color.white,
+            style=label.style_label_up, size=size.tiny)
+
+// ─── MULTI-TOUCH S/R ZONE DETECTION ──────────────────────────────────────────
+// Accumulate every confirmed pivot (high + low) with its bar index
+var float[] srLvl = array.new_float()
+var int[]   srBar = array.new_int()
+var float[] srWck = array.new_float()  // actual wick high/low for zone boundary
+
+if not na(ph)
+    array.push(srLvl, ph)
+    array.push(srBar, bar_index - swLen)
+    array.push(srWck, high[swLen])   // full wick of pivot candle
+
+if not na(pl)
+    array.push(srLvl, pl)
+    array.push(srBar, bar_index - swLen)
+    array.push(srWck, low[swLen])    // full wick of pivot candle
+
+// Keep rolling window capped at 60 — safe on all timeframes including Daily
+while array.size(srLvl) > 60
+    array.shift(srLvl)
+    array.shift(srBar)
+    array.shift(srWck)
+
+// Zone rendering state (cleared and redrawn every tick on the last bar)
+var box[]   srBoxes  = array.new_box()
+var label[] srLabels = array.new_label()
+
+if showSR and barstate.islast
+    srTol = atr * srTolMul
+    // Hard-clamp n — prevents any edge-case array overflow on high TFs
+    n     = math.min(array.size(srLvl), 60)
+
+    // ── Delete previous drawings ──────────────────────────────────────────────
+    for b in srBoxes
+        box.delete(b)
+    for l in srLabels
+        label.delete(l)
+    array.clear(srBoxes)
+    array.clear(srLabels)
+
+    if n >= srMinT
+        // ── Cluster pivots ───────────────────────────────────────────────────
+        // Each pivot is compared against the centroid of its forming cluster.
+        // We iterate until no further merges are possible (one pass is usually enough).
+
+        used = array.new_bool(n, false)
+
+        // Collect clusters: each entry = {centroid, top, bot, count, firstBar}
+        cCent  = array.new_float()
+        cTop   = array.new_float()
+        cBot   = array.new_float()
+        cCnt   = array.new_int()
+        cFirst = array.new_int()
+
+        // Use while loops to avoid Pine v6 off-by-one on for..to when start > end
+        i = 0
+        while i < n
+            if not array.get(used, i)
+                seed    = array.get(srLvl, i)
+                seedWck = array.get(srWck, i)
+                clTop   = math.max(seed, seedWck)
+                clBot   = math.min(seed, seedWck)
+                clSum   = seed
+                clCnt   = 1
+                clFirst = array.get(srBar, i)
+                array.set(used, i, true)
+
+                j = i + 1
+                while j < n
+                    if not array.get(used, j)
+                        lvl_j    = array.get(srLvl, j)
+                        centroid = clSum / clCnt
+                        if math.abs(lvl_j - centroid) <= srTol
+                            wck_j    = array.get(srWck, j)
+                            clTop   := math.max(clTop, math.max(lvl_j, wck_j))
+                            clBot   := math.min(clBot, math.min(lvl_j, wck_j))
+                            clSum   += lvl_j
+                            clCnt   += 1
+                            barJ     = array.get(srBar, j)
+                            if barJ < clFirst
+                                clFirst := barJ
+                            array.set(used, j, true)
+                    j += 1
+
+                array.push(cCent,  clSum / clCnt)
+                array.push(cTop,   clTop)
+                array.push(cBot,   clBot)
+                array.push(cCnt,   clCnt)
+                array.push(cFirst, clFirst)
+            i += 1
+
+        // ── Sort clusters by touch count (most significant first) ─────────────
+        // Simple insertion sort on cCnt (descending), keeping arrays in sync
+        nc = array.size(cCnt)
+        si = 1
+        while si < nc
+            keyC = array.get(cCnt,   si)
+            keyT = array.get(cTop,   si)
+            keyB = array.get(cBot,   si)
+            keyN = array.get(cCent,  si)
+            keyF = array.get(cFirst, si)
+            sj   = si - 1
+            while sj >= 0 and array.get(cCnt, sj) < keyC
+                array.set(cCnt,   sj + 1, array.get(cCnt,   sj))
+                array.set(cTop,   sj + 1, array.get(cTop,   sj))
+                array.set(cBot,   sj + 1, array.get(cBot,   sj))
+                array.set(cCent,  sj + 1, array.get(cCent,  sj))
+                array.set(cFirst, sj + 1, array.get(cFirst, sj))
+                sj -= 1
+            array.set(cCnt,   sj + 1, keyC)
+            array.set(cTop,   sj + 1, keyT)
+            array.set(cBot,   sj + 1, keyB)
+            array.set(cCent,  sj + 1, keyN)
+            array.set(cFirst, sj + 1, keyF)
+            si += 1
+
+        // ── Draw top N qualifying zones ────────────────────────────────────────
+        drawn = 0
+        di = 0
+        while di < nc and drawn < srMaxZ
+            touches = array.get(cCnt, di)
+            if touches >= srMinT
+                zTop   = array.get(cTop,   di) + atr * 0.06
+                zBot   = array.get(cBot,   di) - atr * 0.06
+                zFirst = array.get(cFirst, di)
+
+                bgAlpha = math.max(50, 83 - (touches - srMinT) * 10)
+                bdAlpha = math.max(5,  38 - (touches - srMinT) * 6)
+
+                b = box.new(zFirst, zTop, bar_index + 50, zBot,
+                    border_color = color.new(PURPLE, bdAlpha),
+                    bgcolor      = color.new(PURPLE, bgAlpha),
+                    border_width = 1)
+                array.push(srBoxes, b)
+
+                midZ = (zTop + zBot) / 2
+                lbl  = label.new(bar_index + 4, midZ,
+                    str.tostring(touches) + "×",
+                    color      = color.new(PURPLE, 30),
+                    textcolor  = color.white,
+                    style      = label.style_label_left,
+                    size       = size.tiny)
+                array.push(srLabels, lbl)
+                drawn += 1
+            di += 1
+
+// ─── SESSIONS (UTC) ───────────────────────────────────────────────────────────
+h      = hour(time, "UTC")
+lndnKZ = h >= 3  and h < 5
+lndn   = h >= 3  and h < 12
+nyKZ   = h >= 13 and h < 16
+nyOpen = h >= 13 and h < 20
+inSess = lndn or nyOpen
+
+sessBG = lndnKZ or nyKZ ? color.new(GOLD, 93) :
+         lndn             ? color.new(#1565C0, 95) :
+         nyOpen           ? color.new(#E65100, 95) : na
+bgcolor(showSess ? sessBG : na, title="Session Background")
+
+// ─── EQUILIBRIUM LINE ─────────────────────────────────────────────────────────
+eq = not na(lastSH) and not na(lastSL) ? (lastSH + lastSL) / 2 : na
+plot(eq, "Equilibrium (50%)", color.new(GOLD, 55), 1, plot.style_linebr)
+
+// ─── ENTRY SIGNALS — ICC ZONE BREAK & RETEST MODEL ──────────────────────────
+// TradesBySci: S/R zone marked → zone broken (Phase 1) → price retests zone from other side (Phase 2)
+//              → CHoCH at zone level confirms continuation (Phase 3) → entry inside the zone
+// SL: above/below the CORRECTION SWING (the retest candle's high/low) — NOT the Phase 1 wick
+
+// Phase 1 — INDICATION: Key zone is broken/swept
+// Bullish: support level swept (wick below, close recovers) — zone break with rejection
+// Bearish: resistance level swept (wick above, close rejects) — zone break with rejection
+sslSweep = not na(lastSL) and low < lastSL and close > lastSL
+bslSweep = not na(lastSH) and high > lastSH and close < lastSH
+
+var int sslBar = na
+var int bslBar = na
+
+if sslSweep
+    sslBar := bar_index
+if bslSweep
+    bslBar := bar_index
+
+sweepWin   = 50
+freshSSL   = not na(sslBar) and (bar_index - sslBar) <= sweepWin
+freshBSL   = not na(bslBar) and (bar_index - bslBar) <= sweepWin
+
+// Phase 2 — CORRECTION: Price retests the broken zone from the other side
+// Bullish: after support swept, price corrects back toward that level (zone retest from above)
+// Bearish: after resistance swept, price corrects back toward that level (zone retest from below)
+retestSSL  = freshSSL and not na(lastSL) and low  <= lastSL + atr * 2.0 and close >= lastSL
+retestBSL  = freshBSL and not na(lastSH) and high >= lastSH - atr * 2.0 and close <= lastSH
+inDiscount = not na(eq) and close < eq
+inPremium  = not na(eq) and close > eq
+
+// Phase 2 valid if price is in discount/premium zone OR actively at the zone retest level
+phase2Long  = inDiscount or retestSSL
+phase2Short = inPremium  or retestBSL
+
+// Phase 3 — CONTINUATION: CHoCH with displacement at zone level
+// Entry: just inside the broken zone (the zone now acts as support/resistance from the other side)
+// SL: below the correction swing LOW (for longs) / above correction swing HIGH (for shorts)
+bullBody = close > open and (close - open) >= atr * 0.3
+bearBody = close < open and (open - close) >= atr * 0.3
+
+longEntry  = chochU and inSess and showSig and phase2Long  and freshSSL and bullBody
+shortEntry = chochD and inSess and showSig and phase2Short and freshBSL and bearBody
+
+if longEntry
+    sslBar := na
+if shortEntry
+    bslBar := na
+
+plotshape(longEntry,  "ICC Long",  shape.triangleup,   location.belowbar, BULL, size=size.large, text="ICC\nLong")
+plotshape(shortEntry, "ICC Short", shape.triangledown, location.abovebar, BEAR, size=size.large, text="ICC\nShort")
+
+alertcondition(longEntry,  "ICC Long",  "ICC — Long: Zone swept → retest → CHoCH. Entry inside zone. SL below correction swing.")
+alertcondition(shortEntry, "ICC Short", "ICC — Short: Zone swept → retest → CHoCH. Entry inside zone. SL above correction swing.")
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+var table t = table.new(position.top_right, 2, 8,
+    bgcolor      = color.new(#0D1117, 78),
+    frame_color  = color.new(color.white, 60), frame_width  = 2,
+    border_color = color.new(color.white, 75), border_width = 1)
+
+if showDash and barstate.islast
+    HBG = color.new(#1E2A3A, 50)
+    table.cell(t, 0, 0, "ICC FRAMEWORK", text_color=GOLD, text_size=size.normal,
+        bgcolor=HBG, text_halign=text.align_center)
+    table.cell(t, 1, 0, "TradesBySci", text_color=color.new(GOLD, 40),
+        text_size=size.small, bgcolor=HBG)
+
+    biasClr = bias == "bullish" ? BULL : bias == "bearish" ? BEAR : color.gray
+    biasTxt = bias == "bullish" ? "BULLISH ▲" : bias == "bearish" ? "BEARISH ▼" : "NEUTRAL"
+    table.cell(t, 0, 1, "Bias",   text_color=color.silver, text_size=size.small)
+    table.cell(t, 1, 1, biasTxt, text_color=biasClr,       text_size=size.small)
+
+    evtClr = str.contains(lastEvt, "CHoCH") ? GOLD : color.silver
+    table.cell(t, 0, 2, "Event",  text_color=color.silver, text_size=size.small)
+    table.cell(t, 1, 2, lastEvt, text_color=evtClr,        text_size=size.small)
+
+    sessStr = lndnKZ ? "London KZ" : lndn ? "London" : nyKZ ? "NY KZ" : nyOpen ? "New York" : "Off-Hours"
+    sessClr = lndnKZ or nyKZ ? GOLD : inSess ? color.green : color.red
+    table.cell(t, 0, 3, "Session", text_color=color.silver, text_size=size.small)
+    table.cell(t, 1, 3, sessStr,   text_color=sessClr,       text_size=size.small)
+
+    pdStr = not na(eq) ? (close > eq ? "PREMIUM" : "DISCOUNT") : "—"
+    pdClr = not na(eq) ? (close > eq ? BEAR : BULL) : color.gray
+    table.cell(t, 0, 4, "Zone",  text_color=color.silver, text_size=size.small)
+    table.cell(t, 1, 4, pdStr,   text_color=pdClr,         text_size=size.small)
+
+    eqStr = not na(eq) ? str.tostring(math.round(eq, 2)) : "—"
+    table.cell(t, 0, 5, "Equilib", text_color=color.silver, text_size=size.small)
+    table.cell(t, 1, 5, eqStr,     text_color=GOLD,          text_size=size.small)
+
+    table.cell(t, 0, 6, "ATR(14)", text_color=color.silver, text_size=size.small)
+    table.cell(t, 1, 6, str.tostring(math.round(atr, 2)), text_color=color.white, text_size=size.small)
+
+    statTxt = longEntry ? "▶ ICC LONG" : shortEntry ? "▶ ICC SHORT" : inSess ? "Watching…" : "Off-Hours"
+    statClr = longEntry ? BULL : shortEntry ? BEAR : inSess ? color.silver : color.red
+    table.cell(t, 0, 7, "Status",  text_color=color.silver, text_size=size.small)
+    table.cell(t, 1, 7, statTxt,   text_color=statClr,       text_size=size.small)
