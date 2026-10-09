@@ -1,0 +1,141 @@
+//@version=6
+indicator("Swing & Session Liquidity", shorttitle="SwingLiq", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// 1) Swing liquidity pools: every confirmed swing high (BSL) / swing low (SSL) stays on the chart until price sweeps it.
+//    Swing definition = pivot with `swingLen` bars each side, so a swing appears `swingLen` bars after it forms.
+// 2) Session highs/lows computed from the bars (most recent instance of each session).
+// Session windows default to New York time: Asian 1900-0259, London 0300-0929, New York 0930-1559.
+
+grpS = "Swing pools"
+swingLen   = input.int(3, "Swing length (bars each side)", minval=1, maxval=50, group=grpS, tooltip="Lower = recent swings appear sooner but more of them. 3 suits 15m/1H.")
+maxLevels  = input.int(8, "Max unswept levels per side", minval=1, maxval=40, group=grpS)
+sweepMode  = input.string("Wick", "Count as swept when", options=["Wick", "Close"], group=grpS)
+showSwept  = input.bool(false, "Keep swept levels (dotted)", group=grpS)
+bslCol     = input.color(color.new(color.red, 0), "BSL colour (swing highs)", group=grpS)
+sslCol     = input.color(color.new(color.teal, 0), "SSL colour (swing lows)", group=grpS)
+
+grpT = "Sessions"
+showSess   = input.bool(true, "Show session highs/lows", group=grpT)
+tz         = input.string("America/New_York", "Session timezone", group=grpT)
+asianSess  = input.session("1900-0259", "Asian", group=grpT)
+londonSess = input.session("0300-0929", "London", group=grpT)
+nySess     = input.session("0930-1559", "New York", group=grpT)
+asianCol   = input.color(color.new(color.aqua, 0), "Asian colour", group=grpT)
+londonCol  = input.color(color.new(color.orange, 0), "London colour", group=grpT)
+nyCol      = input.color(color.new(color.blue, 0), "New York colour", group=grpT)
+
+// ---------- swing pools ----------
+var array<float> hiPx = array.new<float>()
+var array<line>  hiLn = array.new<line>()
+var array<label> hiLb = array.new<label>()
+var array<float> loPx = array.new<float>()
+var array<line>  loLn = array.new<line>()
+var array<label> loLb = array.new<label>()
+
+bool sweptHighNow = false
+bool sweptLowNow  = false
+
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low, swingLen, swingLen)
+
+if not na(ph)
+    hiPx.push(ph)
+    hiLn.push(line.new(bar_index - swingLen, ph, bar_index, ph, extend=extend.right, color=bslCol, width=1))
+    hiLb.push(label.new(bar_index - swingLen, ph, "BSL", style=label.style_label_down, color=color.new(bslCol, 20), textcolor=color.white, size=size.tiny))
+    if hiPx.size() > maxLevels
+        hiPx.shift()
+        line.delete(hiLn.shift())
+        label.delete(hiLb.shift())
+
+if not na(pl)
+    loPx.push(pl)
+    loLn.push(line.new(bar_index - swingLen, pl, bar_index, pl, extend=extend.right, color=sslCol, width=1))
+    loLb.push(label.new(bar_index - swingLen, pl, "SSL", style=label.style_label_up, color=color.new(sslCol, 20), textcolor=color.white, size=size.tiny))
+    if loPx.size() > maxLevels
+        loPx.shift()
+        line.delete(loLn.shift())
+        label.delete(loLb.shift())
+
+srcHigh = sweepMode == "Wick" ? high : close
+srcLow  = sweepMode == "Wick" ? low : close
+
+if hiPx.size() > 0
+    for i = hiPx.size() - 1 to 0 by 1
+        if srcHigh > hiPx.get(i)
+            sweptHighNow := true
+            ln = hiLn.get(i)
+            lb = hiLb.get(i)
+            if showSwept
+                line.set_extend(ln, extend.none)
+                line.set_x2(ln, bar_index)
+                line.set_style(ln, line.style_dotted)
+                line.set_color(ln, color.gray)
+                label.set_text(lb, "x")
+                label.set_color(lb, color.new(color.gray, 40))
+            else
+                line.delete(ln)
+                label.delete(lb)
+            hiPx.remove(i)
+            hiLn.remove(i)
+            hiLb.remove(i)
+
+if loPx.size() > 0
+    for i = loPx.size() - 1 to 0 by 1
+        if srcLow < loPx.get(i)
+            sweptLowNow := true
+            ln = loLn.get(i)
+            lb = loLb.get(i)
+            if showSwept
+                line.set_extend(ln, extend.none)
+                line.set_x2(ln, bar_index)
+                line.set_style(ln, line.style_dotted)
+                line.set_color(ln, color.gray)
+                label.set_text(lb, "x")
+                label.set_color(lb, color.new(color.gray, 40))
+            else
+                line.delete(ln)
+                label.delete(lb)
+            loPx.remove(i)
+            loLn.remove(i)
+            loLb.remove(i)
+
+// ---------- session highs/lows (from the bars) ----------
+f_session(string sess, string nm, color col) =>
+    inSess = not na(time(timeframe.period, sess, tz))
+    var float hi = na
+    var float lo = na
+    var int startBar = na
+    var line hiL = na
+    var line loL = na
+    var label hiB = na
+    var label loB = na
+    if inSess and not inSess[1]
+        line.delete(hiL)
+        line.delete(loL)
+        label.delete(hiB)
+        label.delete(loB)
+        hi := high
+        lo := low
+        startBar := bar_index
+        hiL := line.new(bar_index, high, bar_index, high, color=col, style=line.style_dashed)
+        loL := line.new(bar_index, low, bar_index, low, color=col, style=line.style_dashed)
+        hiB := label.new(bar_index, high, nm + " H", style=label.style_label_left, color=color.new(col, 30), textcolor=color.white, size=size.tiny)
+        loB := label.new(bar_index, low, nm + " L", style=label.style_label_left, color=color.new(col, 30), textcolor=color.white, size=size.tiny)
+    else if inSess
+        hi := math.max(hi, high)
+        lo := math.min(lo, low)
+    if barstate.islast and not na(startBar)
+        line.set_xy1(hiL, startBar, hi)
+        line.set_xy2(hiL, bar_index, hi)
+        line.set_xy1(loL, startBar, lo)
+        line.set_xy2(loL, bar_index, lo)
+        label.set_xy(hiB, bar_index, hi)
+        label.set_xy(loB, bar_index, lo)
+
+if showSess
+    f_session(asianSess, "Asian", asianCol)
+    f_session(londonSess, "London", londonCol)
+    f_session(nySess, "NY", nyCol)
+
+alertcondition(sweptHighNow, "BSL swept", "Buy-side liquidity (swing high) swept")
+alertcondition(sweptLowNow, "SSL swept", "Sell-side liquidity (swing low) swept")

@@ -14,6 +14,8 @@ showSR   = input.bool  (true, "Show S/R Zones",              group="S/R Zones")
 srMinT   = input.int   (3,    "Min Touches to Draw",         group="S/R Zones", minval=2, maxval=6)
 srTolMul = input.float (0.3,  "Zone Tolerance (× ATR)",      group="S/R Zones", minval=0.1, maxval=3.0, step=0.1)
 srMaxZ   = input.int   (7,    "Max Zones to Display",        group="S/R Zones", minval=3,  maxval=20)
+srHideBrk = input.bool (true, "Hide Zones Once Broken",      group="S/R Zones")
+srBrkMode = input.string("Close", "Zone Is Broken When Price", options=["Close", "Wick"], group="S/R Zones")
 showSess = input.bool  (true, "Show Sessions",               group="Sessions")
 showDash = input.bool  (true, "Show Dashboard",              group="Display")
 showSig  = input.bool  (true, "Entry Signals",               group="Display")
@@ -142,21 +144,43 @@ var float[] srLvl = array.new_float()
 var int[]   srBar = array.new_int()
 var float[] srWck = array.new_float()  // actual wick high/low for zone boundary
 
+var int[]   srTyp  = array.new_int()    // +1 = pivot high (resistance), -1 = pivot low (support)
+var float[] srMaxC = array.new_float()  // highest close (or high) since the pivot formed
+var float[] srMinC = array.new_float()  // lowest close (or low) since the pivot formed
+
+// Track how far price has travelled past each stored pivot (runs on every bar)
+brkHi = srBrkMode == "Close" ? close : high
+brkLo = srBrkMode == "Close" ? close : low
+ku = 0
+while ku < array.size(srMaxC)
+    array.set(srMaxC, ku, math.max(array.get(srMaxC, ku), brkHi))
+    array.set(srMinC, ku, math.min(array.get(srMinC, ku), brkLo))
+    ku += 1
+
 if not na(ph)
     array.push(srLvl, ph)
     array.push(srBar, bar_index - swLen)
     array.push(srWck, high[swLen])   // full wick of pivot candle
+    array.push(srTyp, 1)
+    array.push(srMaxC, brkHi)
+    array.push(srMinC, brkLo)
 
 if not na(pl)
     array.push(srLvl, pl)
     array.push(srBar, bar_index - swLen)
     array.push(srWck, low[swLen])    // full wick of pivot candle
+    array.push(srTyp, -1)
+    array.push(srMaxC, brkHi)
+    array.push(srMinC, brkLo)
 
 // Keep rolling window capped at 60 — safe on all timeframes including Daily
 while array.size(srLvl) > 60
     array.shift(srLvl)
     array.shift(srBar)
     array.shift(srWck)
+    array.shift(srTyp)
+    array.shift(srMaxC)
+    array.shift(srMinC)
 
 // Zone rendering state (cleared and redrawn every tick on the last bar)
 var box[]   srBoxes  = array.new_box()
@@ -188,6 +212,7 @@ if showSR and barstate.islast
         cBot   = array.new_float()
         cCnt   = array.new_int()
         cFirst = array.new_int()
+        cLast  = array.new_int()   // array index of the most recent pivot in each cluster
 
         // Use while loops to avoid Pine v6 off-by-one on for..to when start > end
         i = 0
@@ -200,6 +225,7 @@ if showSR and barstate.islast
                 clSum   = seed
                 clCnt   = 1
                 clFirst = array.get(srBar, i)
+                clLast  = i
                 array.set(used, i, true)
 
                 j = i + 1
@@ -216,6 +242,8 @@ if showSR and barstate.islast
                             barJ     = array.get(srBar, j)
                             if barJ < clFirst
                                 clFirst := barJ
+                            if barJ > array.get(srBar, clLast)
+                                clLast := j
                             array.set(used, j, true)
                     j += 1
 
@@ -224,6 +252,7 @@ if showSR and barstate.islast
                 array.push(cBot,   clBot)
                 array.push(cCnt,   clCnt)
                 array.push(cFirst, clFirst)
+                array.push(cLast,  clLast)
             i += 1
 
         // ── Sort clusters by touch count (most significant first) ─────────────
@@ -236,6 +265,7 @@ if showSR and barstate.islast
             keyB = array.get(cBot,   si)
             keyN = array.get(cCent,  si)
             keyF = array.get(cFirst, si)
+            keyL = array.get(cLast,  si)
             sj   = si - 1
             while sj >= 0 and array.get(cCnt, sj) < keyC
                 array.set(cCnt,   sj + 1, array.get(cCnt,   sj))
@@ -243,12 +273,14 @@ if showSR and barstate.islast
                 array.set(cBot,   sj + 1, array.get(cBot,   sj))
                 array.set(cCent,  sj + 1, array.get(cCent,  sj))
                 array.set(cFirst, sj + 1, array.get(cFirst, sj))
+                array.set(cLast,  sj + 1, array.get(cLast,  sj))
                 sj -= 1
             array.set(cCnt,   sj + 1, keyC)
             array.set(cTop,   sj + 1, keyT)
             array.set(cBot,   sj + 1, keyB)
             array.set(cCent,  sj + 1, keyN)
             array.set(cFirst, sj + 1, keyF)
+            array.set(cLast,  sj + 1, keyL)
             si += 1
 
         // ── Draw top N qualifying zones ────────────────────────────────────────
@@ -256,11 +288,18 @@ if showSR and barstate.islast
         di = 0
         while di < nc and drawn < srMaxZ
             touches = array.get(cCnt, di)
-            if touches >= srMinT
-                zTop   = array.get(cTop,   di) + atr * 0.06
-                zBot   = array.get(cBot,   di) - atr * 0.06
-                zFirst = array.get(cFirst, di)
+            zTop   = array.get(cTop,   di) + atr * 0.06
+            zBot   = array.get(cBot,   di) - atr * 0.06
+            zFirst = array.get(cFirst, di)
 
+            // A zone is broken once price has gone through it from the side it was formed on:
+            // resistance (latest touch = pivot high) -> price went above the zone;
+            // support (latest touch = pivot low)     -> price went below the zone.
+            lastIdx = array.get(cLast, di)
+            isRes   = array.get(srTyp, lastIdx) > 0
+            zBroken = isRes ? array.get(srMaxC, lastIdx) > zTop : array.get(srMinC, lastIdx) < zBot
+
+            if touches >= srMinT and not (srHideBrk and zBroken)
                 bgAlpha = math.max(50, 83 - (touches - srMinT) * 10)
                 bdAlpha = math.max(5,  38 - (touches - srMinT) * 6)
 
