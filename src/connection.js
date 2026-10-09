@@ -33,6 +33,16 @@ export async function getClient() {
     try {
       // Quick liveness check
       await client.Runtime.evaluate({ expression: '1', returnByValue: true });
+      // If we're attached to a non-chart target, re-check whether a real chart has appeared
+      if (!isChartUrl(targetInfo?.url)) {
+        const better = await findChartTarget();
+        if (better && better.id !== targetInfo?.id) {
+          try { await client.close(); } catch {}
+          client = null;
+          targetInfo = null;
+          return connect();
+        }
+      }
       return client;
     } catch {
       client = null;
@@ -68,12 +78,17 @@ export async function connect() {
   throw new Error(`CDP connection failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
 }
 
+function isChartUrl(url) {
+  return /^https?:\/\/[^/]*tradingview\.com\/chart/i.test(url || '');
+}
+
 async function findChartTarget() {
   const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
   const targets = await resp.json();
-  // Prefer targets with tradingview.com/chart in the URL
-  return targets.find(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url))
-    || targets.find(t => t.type === 'page' && /tradingview/i.test(t.url))
+  // Only web pages on tradingview.com — never the desktop app's internal file:// pages
+  // (tooltip, new-tab, drag-service, etc.), which also contain "TradingView" in their path.
+  return targets.find(t => t.type === 'page' && isChartUrl(t.url))
+    || targets.find(t => t.type === 'page' && /^https?:\/\/[^/]*tradingview\.com/i.test(t.url))
     || null;
 }
 
