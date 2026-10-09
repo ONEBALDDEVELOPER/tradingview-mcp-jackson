@@ -1,12 +1,12 @@
 {
   "_meta": {
     "strategy": "ICC — Indication, Correction, Continuation",
-    "version": "4.1-GOLD",
+    "version": "4.2-GOLD",
     "last_updated": "2026-10-09",
     "instrument_scope": "XAUUSD ONLY",
     "role": "Identify and report the user's ICC conditions from TradingView. Do not predict, force setups, or place trades. Also act as an analysis companion: cross-check each setup against these rules before the user places a trade, and push back honestly when a setup conflicts with them.",
-    "master_sequence": "H4 structure → protected HL/LH break (the indication / CHoCH) → HL/LH holds → first H4 BOS → next H1 BOS (H4 and H1 aligned) → correction → liquidity sweep → entry at the indication level → continuation.",
-    "revision_note": "4.1 reconciles the v4.0 ICC model with the user's own HH/HL-LL/LH CHoCH philosophy (stated 2026-10-09). Where the two conflict, the user's 2026-10-09 rules take priority; see entry_location and open_questions_for_user."
+    "master_sequence": "H4 structure → protected HL/LH break on a candle close (the indication / CHoCH) → correction → liquidity sweep of the LH (sell) / HL (buy) → entry at the indication level → continuation. H4 and H1 direction must align. BOS and Order Blocks are supporting evidence, not gates (see working_rules).",
+    "revision_note": "4.1 reconciles the v4.0 ICC model with the user's own HH/HL-LL/LH CHoCH philosophy (stated 2026-10-09). Where the two conflict, the user's 2026-10-09 rules take priority; see entry_location and open_questions_for_user. 4.2 (2026-10-09) adds working_rules from the backtests: BOS is supporting evidence, not a gate; minimum 1:3 with extension to the next swing; swing length 5; forward-test protocol."
   },
   "instrument_scope": {
     "allowed_instruments": [
@@ -128,8 +128,8 @@
       "Identify protected HL.",
       "Protected HL breaks.",
       "Confirm H4 bearish CHoCH.",
-      "DO NOT ENTER.",
-      "Wait for the first confirmed H4 bearish BOS.",
+      "DO NOT ENTER on the CHoCH itself.",
+      "The first H4 bearish BOS is supporting evidence, not a requirement (working_rules). Wait for the correction, the sweep and the return to the indication level.",
       "The H4 BOS confirms the new bearish direction.",
       "Identify the bearish H4 BOS Order Block."
     ],
@@ -138,25 +138,26 @@
       "Identify protected LH.",
       "Protected LH breaks.",
       "Confirm H4 bullish CHoCH.",
-      "DO NOT ENTER.",
-      "Wait for the first confirmed H4 bullish BOS.",
+      "DO NOT ENTER on the CHoCH itself.",
+      "The first H4 bullish BOS is supporting evidence, not a requirement (working_rules). Wait for the correction, the sweep and the return to the indication level.",
       "The H4 BOS confirms the new bullish direction.",
       "Identify the bullish H4 BOS Order Block."
     ],
-    "rule": "H4 CHoCH identifies the structural change; H4 BOS confirms the new direction. Neither is an automatic entry."
+    "rule": "H4 CHoCH identifies the structural change. A BOS confirms the new direction but is supporting evidence, not a gate (working_rules). Neither is an automatic entry."
   },
   "h1_setup": {
     "after_h4_bos": [
       "Drop to H1.",
       "Keep the H4-confirmed directional bias.",
-      "Wait for the next H1 BOS in the H4 direction.",
+      "An H1 BOS in the H4 direction is supporting evidence, not a requirement (working_rules).",
       "Identify the H1 BOS Order Block created by the displacement producing that BOS.",
       "Wait for correction.",
       "Monitor the H1/H4 Order Block and relevant liquidity.",
       "Prepare entry only when price interacts with the relevant location and returns toward the confirmed direction."
     ],
     "bearish": "H4 bearish CHoCH → H4 bearish BOS → H4 bearish BOS OB → next H1 bearish BOS → H1 bearish BOS OB → correction → OB tap/liquidity sweep → sell continuation.",
-    "bullish": "H4 bullish CHoCH → H4 bullish BOS → H4 bullish BOS OB → next H1 bullish BOS → H1 bullish BOS OB → correction → OB tap/liquidity sweep → buy continuation."
+    "bullish": "H4 bullish CHoCH → H4 bullish BOS → H4 bullish BOS OB → next H1 bullish BOS → H1 bullish BOS OB → correction → OB tap/liquidity sweep → buy continuation.",
+    "note": "Superseded where it conflicts with working_rules: the BOS steps in the bearish/bullish sequences below are supporting evidence, not gates."
   },
   "order_block_rules": {
     "definition": "An Order Block must be structurally associated with the displacement that produced a confirmed BOS.",
@@ -247,7 +248,8 @@
         "Prepare buy-stop entry"
       ],
       "sl": "Just below the last correction swing low before price returns to the indication level (user's drawing, 2026-10-09). See trade_management."
-    }
+    },
+    "note": "Superseded where it conflicts with working_rules/entry_location: BOS steps in these sequences are supporting evidence, not gates; the entry is at the indication level after the correction and the sweep."
   },
   "contingency_entry": {
     "rule": "If the primary entry is missed, never chase. Wait for the next valid BOS, identify its Order Block, wait for its correction and relevant OB/liquidity interaction, then reassess the continuation entry.",
@@ -344,15 +346,15 @@
     "H4 structure is unclear.",
     "Protected H4 HL/LH cannot be identified.",
     "Required H4 CHoCH has not occurred.",
-    "First H4 BOS has not occurred.",
-    "Next H1 BOS has not occurred.",
     "Correction is still developing.",
-    "No relevant OB or liquidity interaction.",
     "Entry would require chasing.",
     "Market is ranging or consolidating.",
     "Structure conflicts across the required hierarchy.",
     "Setup cannot be described as a complete ICC sequence.",
-    "H4 and H1 are not aligned in direction."
+    "H4 and H1 are not aligned in direction.",
+    "No liquidity sweep of the LH (sell) / HL (buy) has occurred before the entry.",
+    "Price has not returned to the indication level.",
+    "The target does not offer at least 1:3 before the next opposing level."
   ],
   "risk_safeguards": {
     "assistant_rules": [
@@ -392,7 +394,7 @@
       "FAILED_HH_LL_WARNING"
     ]
   },
-  "gold_master_rule": "H4 CHoCH identifies the change. H4 BOS confirms the new direction. H4 BOS creates the HTF Order Block. H1 BOS establishes the clearer executable structure and H1 Order Block. Correction creates the opportunity. OB tap and/or liquidity sweep provides location. Entry occurs only as price returns toward the confirmed direction. If the sequence is incomplete, WAIT.",
+  "gold_master_rule": "The H4 CHoCH identifies the change. Entry is at the indication level after the correction and the liquidity sweep, with H4 and H1 aligned in direction. A BOS and Order Blocks are supporting evidence, not requirements. If a required condition is missing, WAIT.",
   "entry_location": {
     "priority_note": "Updated 2026-10-09 after the user drew the model on the chart (labelled: L, H, HL, HH, HL, LH, sweep, indication move / CHoCH move, indication level, correction move, continuation move, entry). Takes priority over any OB-tap-only entry location in entry_model.",
     "model": "Indication-level entry: after the indication (CHoCH) and the correction, with the liquidity sweep done, enter on the price's return to the SAME indication level.",
@@ -409,8 +411,7 @@
     "use": "Treat a sweep of the pool that does not take out the protected level as a liquidity grab, not an invalidation."
   },
   "open_questions_for_user": [
-    "Are Order Blocks required for entry, or confluence only? Currently treated as confluence (entry_location.order_blocks).",
-    "BOS timing varies (see bos_placement). Is the 'first H4 BOS (and next H1 BOS) before entry' gate still strict, or can an entry be taken at the indication level in the retest-before-continuation pattern before the BOS happens?"
+    "Are Order Blocks required for entry, or confluence only? Currently treated as confluence (entry_location.order_blocks)."
   ],
   "rejection_candle": {
     "definition": "A candle is a rejection candle when ONE wick (upper for a bearish rejection, lower for a bullish one) is at least 50% of the full high-low range.",
@@ -483,5 +484,27 @@
       "Not proven: tiny samples, one instrument, settings tuned on the same history, no spreads or commissions, mechanical rules stricter than the user's discretionary reading. Needs forward testing."
     ],
     "strategy_current_settings": "swing 5, 7R, stop buffer 0.05 ATR, BOS off, sweep required, 1% risk (set by the user's request 2026-10-09)"
+  },
+  "working_rules": {
+    "status": "Working hypothesis from the 2026-10-09 backtests (see backtest_findings). Not proven; to be forward-tested before being trusted.",
+    "set_by_user": "2026-10-09",
+    "rules": [
+      "ENTRY: keep the entry at the indication level (entry_location). A BOS (H4 or H1) is supporting evidence, NOT a requirement. Backtest: requiring a BOS cut ~2/3 of the 1H trades and did not improve results.",
+      "TARGET: 1:3 is the minimum. Aim for the next significant swing / liquidity (1:z+, z = 3, 5, 6, 7, 8 or more). Do not fix the target at 3R: on the 1H, 7R > 5R > 3R.",
+      "SWING DEFINITION: use a pivot of 5 bars each side as the working definition of a meaningful swing. Do not use 10 (it looked best on the 1H but lost on the 4H, i.e. tuned to one history).",
+      "FORWARD TEST: before trusting the model, record 30+ setups using these exact rules (demo/paper): date, direction, indication level, entry, stop, target, outcome in R. Do not change the settings during the test. Then compare with the backtest and review."
+    ],
+    "expectations": "Backtest at swing 5 on the 1H: ~39% win rate, profit factor ~1.85, max drawdown ~7.5% at 1% risk per trade. Expect losing streaks.",
+    "supersedes": [
+      "no_trade_conditions: 'First H4 BOS has not occurred' and 'Next H1 BOS has not occurred' (removed).",
+      "h4_structural_shift and h1_setup steps that say to wait for the first H4 BOS / next H1 BOS before entering (reworded).",
+      "entry_model sequences that list BOS steps before entry (BOS is supporting evidence only)."
+    ],
+    "still_unknown": [
+      "Whether the user's discretionary skipping of setups adds value over the mechanical rule.",
+      "Counter-Daily vs with-Daily behaviour.",
+      "Behaviour with 1H and 4H alignment (each timeframe was backtested separately).",
+      "Spreads and slippage."
+    ]
   }
 }
