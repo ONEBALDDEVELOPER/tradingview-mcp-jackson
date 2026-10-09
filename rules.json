@@ -403,5 +403,14 @@
     "Are Order Blocks required for entry, or confluence only? Currently treated as confluence (entry_location.order_blocks).",
     "Should a candle CLOSE beyond a level be required to count a break, rather than a wick? Not yet specified.",
     "Should a 'failed HH/LL' warning be a reported status before CHoCH? Currently only a note in structure_rules.choch_confirmation."
-  ]
+  ],
+  "rejection_candle": {
+    "definition": "A candle is a rejection candle when ONE wick (upper for a bearish rejection, lower for a bullish one) is at least 50% of the full high-low range.",
+    "min_wick_pct": 50,
+    "min_range": "Default 12 points for XAUUSD on the 1H in the indicator; the user has not confirmed a minimum range.",
+    "evaluate_on": "Candle close only.",
+    "context": "A rejection candle is evidence at a level, not an entry by itself. A break still needs a candle close beyond the level.",
+    "indicator": "scripts/rejection-candles.pine (set to 50% by the user on 2026-10-09)",
+    "set_by_user": "2026-10-09"
+  }
 }
