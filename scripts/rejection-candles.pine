@@ -1,0 +1,38 @@
+//@version=6
+indicator("Rejection Candles (wick %)", shorttitle="Rejection", overlay=true, max_labels_count=500)
+
+// A candle is a rejection candle when ONE wick is at least `wickPct` % of the full high-low range.
+// Evaluated on candle close only, so a signal never appears and then disappears intra-candle.
+// Optional: the wick must also sweep a recent swing high/low and the candle must close back across it.
+
+wickPct      = input.float(60.0, "Min wick % of candle range", minval=1.0, maxval=100.0, step=1.0)
+minRange     = input.float(12.0, "Min candle range (price units)", minval=0.0, step=0.5, tooltip="Filters tiny candles. 12 suits XAUUSD on the 1H; lower it for smaller timeframes.")
+requireSweep = input.bool(false, "Require sweep of recent swing + close back across")
+sweepLen     = input.int(20, "Sweep lookback (bars)", minval=2, maxval=200)
+showPct      = input.bool(true, "Show wick % in label")
+bullCol      = input.color(color.new(color.teal, 0), "Bullish rejection colour")
+bearCol      = input.color(color.new(color.red, 0), "Bearish rejection colour")
+
+rng        = high - low
+upperWick  = high - math.max(open, close)
+lowerWick  = math.min(open, close) - low
+upperPct   = rng > 0 ? upperWick / rng * 100.0 : 0.0
+lowerPct   = rng > 0 ? lowerWick / rng * 100.0 : 0.0
+
+priorLow   = ta.lowest(low, sweepLen)[1]
+priorHigh  = ta.highest(high, sweepLen)[1]
+sweptLow   = low < priorLow and close > priorLow
+sweptHigh  = high > priorHigh and close < priorHigh
+
+sizeOk     = rng >= minRange and barstate.isconfirmed
+bullRej    = sizeOk and lowerPct >= wickPct and (not requireSweep or sweptLow)
+bearRej    = sizeOk and upperPct >= wickPct and (not requireSweep or sweptHigh)
+
+if bullRej
+    label.new(bar_index, low, showPct ? str.tostring(lowerPct, "#") + "%" : "", style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.small)
+
+if bearRej
+    label.new(bar_index, high, showPct ? str.tostring(upperPct, "#") + "%" : "", style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.small)
+
+alertcondition(bullRej, "Bullish rejection candle", "Bullish rejection candle closed")
+alertcondition(bearRej, "Bearish rejection candle", "Bearish rejection candle closed")
