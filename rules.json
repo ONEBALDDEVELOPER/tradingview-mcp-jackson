@@ -446,5 +446,42 @@
     ],
     "caveat": "This conflicts with the v4.0 gates that require the first H4 BOS (and the next H1 BOS) BEFORE an entry. In the retest-before-continuation pattern the BOS may come after the entry level is touched. See open_questions_for_user.",
     "approach": "Report which stage price is in. If a required condition is missing, report WAIT. Price is unpredictable; do not force a pattern."
+  },
+  "backtest_findings": {
+    "date": "2026-10-09",
+    "tool": "scripts/icc-indication-strategy.pine (TradingView Strategy Tester, XAUUSD, OANDA, range shown by the tester: Jan 2025 - Oct 2026)",
+    "model_tested": "Mechanical version of entry_location: HH-HL-LH (failed HH), candle close below the HL (CHoCH), sweep of the LH, sell-stop at the indication level; stop above the highest high since the CHoCH (+0.05-0.1 ATR); target R multiple; 80-bar max hold; 1% risk; no spreads/commissions; mirror for buys.",
+    "bos_gate_1h_swing3": {
+      "no_bos": {
+        "3R": "34 trades, +2.19%, PF 1.10",
+        "5R": "34 trades, +4.24%, PF 1.19",
+        "7R": "33 trades, +5.73%, PF 1.27"
+      },
+      "bos_required": {
+        "3R": "12 trades, +0.59%, PF 1.08",
+        "5R_7R": "12 trades, -0.52%, PF 0.93"
+      }
+    },
+    "bos_gate_4h_swing3": {
+      "no_bos": {
+        "3R": "15 trades, -6.20%, PF 0.47",
+        "5R": "15 trades, -11.14%, PF 0.10"
+      },
+      "bos_required": {
+        "3R": "7 trades, +2.00%, PF 1.51",
+        "5R": "7 trades, -0.06%, PF 0.99"
+      }
+    },
+    "swing_length_sweep_7R_no_bos": {
+      "1h": "swing 5: 23 trades +12.88% PF 1.85; 7: 13 +0.64% 1.09; 8: 11 +7.66% 2.26; 9: 8 +9.62% 3.40; 10: 8 +8.51% 3.13; 11: 5 +0.86% 1.29; 12: 4 -1.96% 0.34; 15: 3 -2.96% 0",
+      "4h": "swing 5: 7 trades +5.09% PF 2.68; 7-9: 7 trades -4.19% 0.20; 10: 8 -5.14% 0.17; 11: 6 -4.48% 0.08; 12: 3 -1.57% 0.21; 15: 1 trade +0.42%"
+    },
+    "conclusions": [
+      "The BOS-before-entry gate cut about two-thirds of the 1H trades and did not improve results; gated trades never reached 5R+. 4H showed the gate helping but on only 7 trades. No clear evidence the BOS should be a hard gate.",
+      "Higher targets (5R-7R) did better than 3R on the 1H, consistent with the user's '1:z+' description.",
+      "Swing 10 looked best on the 1H but lost on the 4H, so it is likely tuned to the 1H history. Swing 5 is the only setting positive on both timeframes (1H 23 trades, 4H 7 trades).",
+      "Not proven: tiny samples, one instrument, settings tuned on the same history, no spreads or commissions, mechanical rules stricter than the user's discretionary reading. Needs forward testing."
+    ],
+    "strategy_current_settings": "swing 5, 7R, stop buffer 0.05 ATR, BOS off, sweep required, 1% risk (set by the user's request 2026-10-09)"
   }
 }
