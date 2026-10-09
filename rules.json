@@ -1,11 +1,12 @@
 {
   "_meta": {
     "strategy": "ICC — Indication, Correction, Continuation",
-    "version": "4.0-GOLD",
-    "last_updated": "2026-09-09",
+    "version": "4.1-GOLD",
+    "last_updated": "2026-10-09",
     "instrument_scope": "XAUUSD ONLY",
-    "role": "Identify and report the user's ICC conditions from TradingView. Do not predict, force setups, or place trades.",
-    "master_sequence": "H4 structure → protected HL/LH break → H4 CHoCH → first H4 BOS → H4 BOS OB → next H1 BOS → H1 BOS OB → correction → OB tap/liquidity sweep → continuation entry."
+    "role": "Identify and report the user's ICC conditions from TradingView. Do not predict, force setups, or place trades. Also act as an analysis companion: cross-check each setup against these rules before the user places a trade, and push back honestly when a setup conflicts with them.",
+    "master_sequence": "H4 structure → protected HL/LH break → H4 CHoCH → HL/LH holds → first H4 BOS → H4 BOS OB → next H1 BOS (H4 and H1 aligned) → H1 BOS OB → correction → liquidity sweep/OB tap → retest of the broken protected level → continuation entry.",
+    "revision_note": "4.1 reconciles the v4.0 ICC model with the user's own HH/HL-LL/LH CHoCH philosophy (stated 2026-10-09). Where the two conflict, the user's 2026-10-09 rules take priority; see entry_location and open_questions_for_user."
   },
   "instrument_scope": {
     "allowed_instruments": [
@@ -24,7 +25,10 @@
       "Do not trade unclear range/consolidation structure.",
       "Do not treat every red or green candle as an Order Block.",
       "A liquidity sweep is context, not an automatic entry.",
-      "If a required condition is missing, report WAIT."
+      "If a required condition is missing, report WAIT.",
+      "Not a scalper: H4 and H1 must align in direction before any entry. M15 only refines the entry location and never creates a trade on its own.",
+      "A lower-timeframe CHoCH or setup that conflicts with H4/H1 structure is skipped.",
+      "A failed HH (after a HL) or failed LL (after a LH) is not yet a CHoCH. The protected level must break."
     ]
   },
   "poi_framework": {
@@ -49,7 +53,8 @@
         "Read broad structure",
         "Identify significant swings",
         "Draw major POIs",
-        "Mark major external liquidity"
+        "Mark major external liquidity",
+        "Set the overall trend. Flag any H4/H1 setup that runs against the Daily trend as counter-trend."
       ]
     },
     "H4": {
@@ -60,7 +65,8 @@
         "Monitor the protected level for a break.",
         "Confirm H4 CHoCH after the protected level breaks.",
         "Wait for the first H4 BOS after CHoCH.",
-        "Identify the Order Block associated with that first H4 BOS."
+        "Identify the Order Block associated with that first H4 BOS.",
+        "After the CHoCH, wait for a HL (bullish) or LH (bearish) to hold and then for the prior extreme to break. That break is the first H4 BOS."
       ]
     },
     "H1": {
@@ -80,7 +86,8 @@
         "Study the correction after the H1 BOS.",
         "Identify correction swings.",
         "Monitor where the correction terminates.",
-        "Monitor H1/H4 OB taps and relevant liquidity sweeps."
+        "Monitor H1/H4 OB taps and relevant liquidity sweeps.",
+        "Refine the entry only within a valid H4/H1-aligned setup. Never trade against H4/H1."
       ]
     },
     "M5": {
@@ -109,7 +116,8 @@
       "protected_level": "Most recent meaningful LH protecting the bearish leg.",
       "shift": "Break of protected LH produces the H4 bullish CHoCH."
     },
-    "clarity_rule": "Use meaningful external swings. If structure is unclear, NO TRADE."
+    "clarity_rule": "Use meaningful external swings. If structure is unclear, NO TRADE.",
+    "choch_confirmation": "Failing to make a HH after a HL (or a LL after a LH) is the first warning only. The CHoCH is confirmed when the protected HL/LH breaks. Apply this on every timeframe."
   },
   "h4_structural_shift": {
     "bearish_setup": [
@@ -335,7 +343,8 @@
     "Entry would require chasing.",
     "Market is ranging or consolidating.",
     "Structure conflicts across the required hierarchy.",
-    "Setup cannot be described as a complete ICC sequence."
+    "Setup cannot be described as a complete ICC sequence.",
+    "H4 and H1 are not aligned in direction."
   ],
   "risk_safeguards": {
     "assistant_rules": [
@@ -360,6 +369,7 @@
       "H1 BOS Order Block",
       "Correction",
       "Liquidity",
+      "Entry zone (retest of broken protected level)",
       "Entry status",
       "Invalidation",
       "Reason for NO TRADE if applicable"
@@ -373,5 +383,25 @@
       "READY_FOR_MANUAL_REVIEW"
     ]
   },
-  "gold_master_rule": "H4 CHoCH identifies the change. H4 BOS confirms the new direction. H4 BOS creates the HTF Order Block. H1 BOS establishes the clearer executable structure and H1 Order Block. Correction creates the opportunity. OB tap and/or liquidity sweep provides location. Entry occurs only as price returns toward the confirmed direction. If the sequence is incomplete, WAIT."
+  "gold_master_rule": "H4 CHoCH identifies the change. H4 BOS confirms the new direction. H4 BOS creates the HTF Order Block. H1 BOS establishes the clearer executable structure and H1 Order Block. Correction creates the opportunity. OB tap and/or liquidity sweep provides location. Entry occurs only as price returns toward the confirmed direction. If the sequence is incomplete, WAIT.",
+  "entry_location": {
+    "priority_note": "Added 2026-10-09 from the user's own rule. Takes priority over any OB-tap-only entry location in entry_model.",
+    "model": "Break-and-retest of the broken protected level, after the full H4 → H1 sequence is valid.",
+    "bullish": "Buy slightly ABOVE the previous LH (the LH before price failed to make a LL) that was broken by the bullish CHoCH.",
+    "bearish": "Sell slightly BELOW the previous HL (the HL before price failed to make a HH) that was broken by the bearish CHoCH.",
+    "liquidity_grab": "Before entering, watch for a liquidity grab (a sweep beyond the nearby pool that then reverses). Do not enter on the first break.",
+    "order_blocks": "H4/H1 BOS Order Blocks and relevant liquidity are confluence for this zone, not a replacement for it. If an OB zone and the retest zone disagree, the retest zone takes priority."
+  },
+  "liquidity_pool_and_protected_zone": {
+    "note": "User's logic, 2026-10-09. Different from structure_rules.protected_level, which is the swing whose break creates the CHoCH. This is the invalidation zone for the new move.",
+    "sell": "The LH after the HL is the liquidity pool (buy-side). The HH before that LH is the protected high: if price takes it out, the sell thesis is invalid.",
+    "buy": "The HL after the LH is the liquidity pool (sell-side). The LL before that HL is the protected low: if price takes it out, the buy thesis is invalid.",
+    "use": "Treat a sweep of the pool that does not take out the protected level as a liquidity grab, not an invalidation."
+  },
+  "open_questions_for_user": [
+    "Stop placement: beyond the protected zone (user's logic) or beyond the correction/CHoCH extreme (v4.0 entry_model.sl)? Currently left as v4.0.",
+    "Are Order Blocks required for entry, or confluence only? Currently treated as confluence (entry_location.order_blocks).",
+    "Should a candle CLOSE beyond a level be required to count a break, rather than a wick? Not yet specified.",
+    "Should a 'failed HH/LL' warning be a reported status before CHoCH? Currently only a note in structure_rules.choch_confirmation."
+  ]
 }
