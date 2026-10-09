@@ -5,7 +5,7 @@
     "last_updated": "2026-10-09",
     "instrument_scope": "XAUUSD ONLY",
     "role": "Identify and report the user's ICC conditions from TradingView. Do not predict, force setups, or place trades. Also act as an analysis companion: cross-check each setup against these rules before the user places a trade, and push back honestly when a setup conflicts with them.",
-    "master_sequence": "H4 structure → protected HL/LH break → H4 CHoCH → HL/LH holds → first H4 BOS → H4 BOS OB → next H1 BOS (H4 and H1 aligned) → H1 BOS OB → correction → liquidity sweep/OB tap → retest of the broken protected level → continuation entry.",
+    "master_sequence": "H4 structure → protected HL/LH break (the indication / CHoCH) → HL/LH holds → first H4 BOS → next H1 BOS (H4 and H1 aligned) → correction → liquidity sweep → entry at the indication level → continuation.",
     "revision_note": "4.1 reconciles the v4.0 ICC model with the user's own HH/HL-LL/LH CHoCH philosophy (stated 2026-10-09). Where the two conflict, the user's 2026-10-09 rules take priority; see entry_location and open_questions_for_user."
   },
   "instrument_scope": {
@@ -28,7 +28,8 @@
       "If a required condition is missing, report WAIT.",
       "Not a scalper: H4 and H1 must align in direction before any entry. M15 only refines the entry location and never creates a trade on its own.",
       "A lower-timeframe CHoCH or setup that conflicts with H4/H1 structure is skipped.",
-      "A failed HH (after a HL) or failed LL (after a LH) is not yet a CHoCH. The protected level must break."
+      "A failed HH (after a HL) or failed LL (after a LH) is not yet a CHoCH. The protected level must break.",
+      "A break of a level counts only on a candle CLOSE beyond it. A wick beyond a level is a sweep, not a break."
     ]
   },
   "poi_framework": {
@@ -117,7 +118,9 @@
       "shift": "Break of protected LH produces the H4 bullish CHoCH."
     },
     "clarity_rule": "Use meaningful external swings. If structure is unclear, NO TRADE.",
-    "choch_confirmation": "Failing to make a HH after a HL (or a LL after a LH) is the first warning only. The CHoCH is confirmed when the protected HL/LH breaks. Apply this on every timeframe."
+    "choch_confirmation": "Failing to make a HH after a HL (or a LL after a LH) is the first warning and MUST be reported as FAILED_HH_LL_WARNING. It is not a CHoCH: the protected level must break on a candle close. Apply on every timeframe.",
+    "indication_level": "The price of the last HL (for a sell) or last LH (for a buy) before price failed to make a HH/LL. Its break is the indication (CHoCH move). The correction later sweeps the LH (sell) / HL (buy) that formed after it, then price returns to this same level for the entry.",
+    "break_confirmation": "A break of any level (protected HL/LH, indication level, swing high/low) requires a candle close beyond it. User-confirmed 2026-10-09."
   },
   "h4_structural_shift": {
     "bearish_setup": [
@@ -229,7 +232,7 @@
         "Price returns toward bearish direction",
         "Prepare sell-stop entry"
       ],
-      "sl": "Above the relevant correction/CHoCH high. For a contingency entry after a subsequent BOS, use the first BOS high specified by the user's rule."
+      "sl": "Just above the last correction swing high before price returns to the indication level (user's drawing, 2026-10-09). See trade_management."
     },
     "bullish": {
       "sequence": [
@@ -243,7 +246,7 @@
         "Price returns toward bullish direction",
         "Prepare buy-stop entry"
       ],
-      "sl": "Below the relevant correction/CHoCH low. For a contingency entry after a subsequent BOS, use the first BOS low specified by the user's rule."
+      "sl": "Just below the last correction swing low before price returns to the indication level (user's drawing, 2026-10-09). See trade_management."
     }
   },
   "contingency_entry": {
@@ -259,6 +262,11 @@
   "alert_protocol": {
     "purpose": "Report structural events so the user can perform lower-timeframe analysis manually.",
     "events": [
+      [
+        "FAILED_HH_LL_WARNING",
+        "A HH (after a HL) or LL (after a LH) attempt failed. Not a CHoCH yet; monitor the protected level for a candle close beyond it.",
+        "WAIT"
+      ],
       [
         "H4_PROTECTED_LEVEL_BROKEN",
         "H4 protected HL/LH broken. Monitor for CHoCH.",
@@ -380,17 +388,19 @@
       "WAITING",
       "INVALIDATED",
       "NO TRADE",
-      "READY_FOR_MANUAL_REVIEW"
+      "READY_FOR_MANUAL_REVIEW",
+      "FAILED_HH_LL_WARNING"
     ]
   },
   "gold_master_rule": "H4 CHoCH identifies the change. H4 BOS confirms the new direction. H4 BOS creates the HTF Order Block. H1 BOS establishes the clearer executable structure and H1 Order Block. Correction creates the opportunity. OB tap and/or liquidity sweep provides location. Entry occurs only as price returns toward the confirmed direction. If the sequence is incomplete, WAIT.",
   "entry_location": {
-    "priority_note": "Added 2026-10-09 from the user's own rule. Takes priority over any OB-tap-only entry location in entry_model.",
-    "model": "Break-and-retest of the broken protected level, after the full H4 → H1 sequence is valid.",
-    "bullish": "Buy slightly ABOVE the previous LH (the LH before price failed to make a LL) that was broken by the bullish CHoCH.",
-    "bearish": "Sell slightly BELOW the previous HL (the HL before price failed to make a HH) that was broken by the bearish CHoCH.",
+    "priority_note": "Updated 2026-10-09 after the user drew the model on the chart (labelled: L, H, HL, HH, HL, LH, sweep, indication move / CHoCH move, indication level, correction move, continuation move, entry). Takes priority over any OB-tap-only entry location in entry_model.",
+    "model": "Indication-level entry: after the indication (CHoCH) and the correction, with the liquidity sweep done, enter on the price's return to the SAME indication level.",
+    "bullish": "Buy at the indication level: the last LH (the LH before price failed to make a LL) that was broken upward. Sweep first: the correction takes the sell-side pool (the HL after that LH).",
+    "bearish": "Sell at the indication level: the last HL (the HL before price failed to make a HH) that was broken downward. Sweep first: the correction takes the buy-side pool (the LH after that HL).",
     "liquidity_grab": "Before entering, watch for a liquidity grab (a sweep beyond the nearby pool that then reverses). Do not enter on the first break.",
-    "order_blocks": "H4/H1 BOS Order Blocks and relevant liquidity are confluence for this zone, not a replacement for it. If an OB zone and the retest zone disagree, the retest zone takes priority."
+    "order_blocks": "H4/H1 BOS Order Blocks and relevant liquidity are confluence for this zone, not a replacement for it. If an OB zone and the retest zone disagree, the retest zone takes priority.",
+    "offset": "The user's drawing says 'entry on the same indication level'. Earlier wording said 'slightly above/below'; treat that as a small tolerance around the level, not a different level. Exact offset not yet specified."
   },
   "liquidity_pool_and_protected_zone": {
     "note": "User's logic, 2026-10-09. Different from structure_rules.protected_level, which is the swing whose break creates the CHoCH. This is the invalidation zone for the new move.",
@@ -399,10 +409,8 @@
     "use": "Treat a sweep of the pool that does not take out the protected level as a liquidity grab, not an invalidation."
   },
   "open_questions_for_user": [
-    "Stop placement: beyond the protected zone (user's logic) or beyond the correction/CHoCH extreme (v4.0 entry_model.sl)? Currently left as v4.0.",
     "Are Order Blocks required for entry, or confluence only? Currently treated as confluence (entry_location.order_blocks).",
-    "Should a candle CLOSE beyond a level be required to count a break, rather than a wick? Not yet specified.",
-    "Should a 'failed HH/LL' warning be a reported status before CHoCH? Currently only a note in structure_rules.choch_confirmation."
+    "BOS timing varies (see bos_placement). Is the 'first H4 BOS (and next H1 BOS) before entry' gate still strict, or can an entry be taken at the indication level in the retest-before-continuation pattern before the BOS happens?"
   ],
   "rejection_candle": {
     "definition": "A candle is a rejection candle when ONE wick (upper for a bearish rejection, lower for a bullish one) is at least 50% of the full high-low range.",
@@ -412,5 +420,22 @@
     "context": "A rejection candle is evidence at a level, not an entry by itself. A break still needs a candle close beyond the level.",
     "indicator": "scripts/rejection-candles.pine (set to 50% by the user on 2026-10-09)",
     "set_by_user": "2026-10-09"
+  },
+  "trade_management": {
+    "set_by_user": "2026-10-09 (from the user's labelled drawing with a position tool, and 'I aim for 1:3 RR')",
+    "entry": "At the indication level (see entry_location).",
+    "stop": "Sell: just above the last correction swing high before price returns to the indication level. Buy: just below the last correction swing low. Not beyond the sweep high/low and not beyond the protected high/low; the protected high/low remains the thesis-invalidation level.",
+    "target": "1:3 risk-to-reward (target at 3x the stop distance).",
+    "note": "If a 1:3 target is not available before the next obvious opposing level, report it; do not force the trade."
+  },
+  "bos_placement": {
+    "set_by_user": "2026-10-09",
+    "rule": "The BOS does not always come at the same point. Do not assume a fixed position for it, and do not predict which pattern will occur.",
+    "patterns_described_by_user": [
+      "BOS happens after the CHoCH, then price corrects again, then comes to and goes through our entry (indication) level.",
+      "Price corrects after the CHoCH and retests our entry (indication) level before continuing."
+    ],
+    "caveat": "This conflicts with the v4.0 gates that require the first H4 BOS (and the next H1 BOS) BEFORE an entry. In the retest-before-continuation pattern the BOS may come after the entry level is touched. See open_questions_for_user.",
+    "approach": "Report which stage price is in. If a required condition is missing, report WAIT. Price is unpredictable; do not force a pattern."
   }
 }
