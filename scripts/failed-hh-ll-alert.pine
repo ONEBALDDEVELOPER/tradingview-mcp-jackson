@@ -1,0 +1,104 @@
+//@version=6
+indicator("Failed HH / LL Alert", shorttitle="FailHHLL", overlay=true, max_lines_count=100, max_labels_count=200)
+
+// Implements the FAILED_HH_LL_WARNING event from rules.json (v4.2).
+//   Failed HH: HH -> HL -> LH (the high after the higher low is lower than the HH).
+//              The HL becomes the watched level (the indication level). A candle CLOSE below it = CHoCH down.
+//              A close above the HH cancels the warning.
+//   Failed LL: mirror image (LL -> LH -> HL; the low after the lower high is higher than the LL).
+//              The LH becomes the watched level. A candle CLOSE above it = CHoCH up. A close below the LL cancels it.
+// A failed HH/LL is only a WARNING, not a CHoCH.
+
+swingLen   = input.int(5, "Swing length (bars each side)", minval=1, maxval=30, tooltip="Working rule: 5. A swing is confirmed this many bars after it forms, so the warning appears that many bars after the lower high / higher low.")
+showLines  = input.bool(true, "Show the watched level (indication level)")
+showLabels = input.bool(true, "Show labels")
+badCol     = input.color(color.new(color.red, 0), "Bearish colour (failed HH)")
+goodCol    = input.color(color.new(color.teal, 0), "Bullish colour (failed LL)")
+
+// One call per direction. Series are passed in "sell space": for the failed-LL case they are negated, so the same code applies.
+// Real price = sgn * sell-space price (sgn = 1 for failed HH, -1 for failed LL).
+f_fail(float hiS, float loS, float clS, float sgn) =>
+    var int[]   pvT = array.new_int()     // 1 = pivot high, -1 = pivot low (alternating list)
+    var float[] pvP = array.new_float()
+    var int[]   pvI = array.new_int()
+    var int st = 0                        // 0 = nothing, 1 = warning active (watching the level)
+    var float lvl = na                    // the HL (failed HH) / LH (failed LL): the indication level
+    var float protP = na                  // the HH / LL: a close beyond it cancels the warning
+    var line ln = na
+    var label lb = na
+    bool failNow = false
+    bool chochNow = false
+
+    ph = ta.pivothigh(hiS, swingLen, swingLen)
+    pl = ta.pivotlow(loS, swingLen, swingLen)
+
+    if not na(ph)
+        int a = array.size(pvT)
+        if a > 0 and array.get(pvT, a - 1) == 1
+            if ph > array.get(pvP, a - 1)
+                array.set(pvP, a - 1, ph)
+                array.set(pvI, a - 1, bar_index - swingLen)
+        else
+            array.push(pvT, 1)
+            array.push(pvP, ph)
+            array.push(pvI, bar_index - swingLen)
+        int b = array.size(pvT)
+        if b >= 5
+            if array.get(pvT, b - 5) == 1 and array.get(pvT, b - 4) == -1 and array.get(pvT, b - 3) == 1 and array.get(pvT, b - 2) == -1 and array.get(pvT, b - 1) == 1
+                h0 = array.get(pvP, b - 5)
+                l1 = array.get(pvP, b - 4)
+                h1 = array.get(pvP, b - 3)
+                l2 = array.get(pvP, b - 2)
+                h2 = array.get(pvP, b - 1)
+                if h1 > h0 and l2 > l1 and h2 < h1
+                    // HH -> HL -> LH: the HH failed
+                    if st == 1
+                        line.delete(ln)
+                    st := 1
+                    lvl := l2
+                    protP := h1
+                    failNow := true
+                    if showLines
+                        ln := line.new(array.get(pvI, b - 2), sgn * lvl, bar_index, sgn * lvl, extend = extend.right, color = sgn > 0 ? badCol : goodCol, style = line.style_dashed, width = 1)
+                    if showLabels
+                        lb := label.new(array.get(pvI, b - 1), sgn > 0 ? high[swingLen] : low[swingLen], sgn > 0 ? "Failed HH" : "Failed LL", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = sgn > 0 ? badCol : goodCol, textcolor = color.white, size = size.small)
+
+    if not na(pl)
+        int c = array.size(pvT)
+        if c > 0 and array.get(pvT, c - 1) == -1
+            if pl < array.get(pvP, c - 1)
+                array.set(pvP, c - 1, pl)
+                array.set(pvI, c - 1, bar_index - swingLen)
+        else
+            array.push(pvT, -1)
+            array.push(pvP, pl)
+            array.push(pvI, bar_index - swingLen)
+
+    if st == 1
+        if clS > protP
+            // the HH (LL) was taken out: warning cancelled
+            st := 0
+            if showLines
+                line.set_extend(ln, extend.none)
+                line.set_x2(ln, bar_index)
+                line.set_style(ln, line.style_dotted)
+                line.set_color(ln, color.gray)
+        else if clS < lvl
+            // candle CLOSE through the watched level: CHoCH
+            st := 0
+            chochNow := true
+            if showLines
+                line.set_extend(ln, extend.none)
+                line.set_x2(ln, bar_index)
+                line.set_style(ln, line.style_solid)
+            if showLabels
+                label.new(bar_index, sgn > 0 ? low : high, sgn > 0 ? "CHoCH v" : "CHoCH ^", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = sgn > 0 ? badCol : goodCol, textcolor = color.white, size = size.small)
+    [failNow, chochNow]
+
+[failHH, chochDn] = f_fail(high, low, close, 1.0)
+[failLL, chochUp] = f_fail(-low, -high, -close, -1.0)
+
+alertcondition(failHH, "Failed HH (warning)", "{{ticker}} {{interval}}: HH failed (lower high after a higher low). Warning only - not a CHoCH yet. Watch the HL for a candle close below it.")
+alertcondition(failLL, "Failed LL (warning)", "{{ticker}} {{interval}}: LL failed (higher low after a lower high). Warning only - not a CHoCH yet. Watch the LH for a candle close above it.")
+alertcondition(chochDn, "CHoCH down (close below the HL)", "{{ticker}} {{interval}}: CHoCH down - a candle closed below the HL after a failed HH.")
+alertcondition(chochUp, "CHoCH up (close above the LH)", "{{ticker}} {{interval}}: CHoCH up - a candle closed above the LH after a failed LL.")
