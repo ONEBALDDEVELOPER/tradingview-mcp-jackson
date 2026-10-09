@@ -425,8 +425,17 @@
     "set_by_user": "2026-10-09 (from the user's labelled drawing with a position tool, and 'I aim for 1:3 RR')",
     "entry": "At the indication level (see entry_location).",
     "stop": "Sell: just above the last correction swing high before price returns to the indication level. Buy: just below the last correction swing low. Not beyond the sweep high/low and not beyond the protected high/low; the protected high/low remains the thesis-invalidation level.",
-    "target": "1:3 risk-to-reward (target at 3x the stop distance).",
-    "note": "If a 1:3 target is not available before the next obvious opposing level, report it; do not force the trade."
+    "target": "Minimum 1:3 risk-to-reward. The position is typically 1:z or better, with z = 3, 5, 6, 7, 8 or more (user, 2026-10-09): extend to the next significant swing low/high or liquidity when it is available.",
+    "note": "If a 1:3 target is not available before the next obvious opposing level, report it; do not force the trade.",
+    "worked_example": {
+      "source": "User's chart drawing, XAUUSD 1H, 24 Aug - 2 Sep 2026 (short_position crzsVS).",
+      "indication_level": "4624.26 (confirmed by the user). The HL whose break was the indication; horizontal ray from 24 Aug 2026 13:00 UTC.",
+      "entry": "4624.51 on 26 Aug 2026 04:00 UTC, i.e. at the indication level (0.25 above the line).",
+      "stop": "~4679.4, just above the 4660-4674 zone and the 4673.77 last correction swing high (~55 points).",
+      "target": "~4302.7, at the 4301.7 swing low (~322 points), about 1:5.9.",
+      "what_happened": "After the failed HH (peak 4697.1, then lower highs) and the break of the 4625 HL, price corrected back to the level, retested it repeatedly in the 4583-4643 range for days, then continued down to 4282.6. Target reached; stop not touched.",
+      "lesson": "Entry at the indication level, stop beyond the last correction high, target at the next swing low. Price retested the level several times before continuing (BOS timing varies)."
+    }
   },
   "bos_placement": {
     "set_by_user": "2026-10-09",

@@ -1,0 +1,125 @@
+//@version=6
+strategy("ICC Indication-Level Entry", shorttitle="ICC-IL", overlay=true, initial_capital=10000, pyramiding=0, margin_long=0, margin_short=0, max_labels_count=300)
+
+// Mechanical version of the model in rules.json (v4.1-GOLD):
+//   SELL: HH -> HL -> LH (failed HH). A candle CLOSE below that HL is the CHoCH; the HL is the INDICATION LEVEL.
+//         The correction then sweeps the LH (a wick above it). Entry = sell stop at the indication level when price comes back down to it.
+//         Stop = just above the highest high since the CHoCH. Target = RR multiple of the stop distance.
+//   BUY is the mirror image (LL -> LH -> HL failed LL; close above that LH; sweep the HL; buy stop at the level).
+// Optional gate: require a BOS (close beyond the first post-CHoCH swing) before entry.
+
+grpM = "Model"
+swingLen     = input.int(3, "Swing length (bars each side)", minval=1, maxval=20, group=grpM)
+requireSweep = input.bool(true, "Require sweep of the LH / HL before entry", group=grpM)
+requireBos   = input.bool(false, "Require a BOS before entry", group=grpM)
+expireBars   = input.int(80, "Setup expires after (bars since CHoCH)", minval=5, group=grpM)
+enableShort  = input.bool(true, "Trade sells", group=grpM)
+enableLong   = input.bool(true, "Trade buys", group=grpM)
+
+grpR = "Risk"
+rr          = input.float(3.0, "Target (R multiple)", minval=1.0, step=0.5, group=grpR)
+stopBuf     = input.float(0.1, "Stop buffer (x ATR)", minval=0.0, step=0.05, group=grpR)
+riskPct     = input.float(1.0, "Risk per trade (% of equity)", minval=0.1, step=0.1, group=grpR)
+holdBars    = input.int(80, "Max bars in trade (0 = off)", minval=0, group=grpR)
+
+grpD = "Display"
+showLabels  = input.bool(true, "Label CHoCH", group=grpD)
+
+atr = ta.atr(14)
+
+// One call per direction. Prices are passed in "sell space": for buys the series are negated, so the same logic applies.
+// Real price = sgn * sell-space price (sgn = 1 for sells, -1 for buys).
+f_icc(float hiS, float loS, float clS, float sgn, bool enable, string idEntry, string idExit) =>
+    var int[]   pvT = array.new_int()     // 1 = pivot high, -1 = pivot low (alternating list)
+    var float[] pvP = array.new_float()
+    var int st = 0                        // 0 = none, 1 = waiting for CHoCH, 2 = post-CHoCH
+    var float lvl = na                    // indication level
+    var float lhP = na                    // the LH (sell) / HL (buy) that must be swept
+    var float protP = na                  // protected extreme: a close beyond it kills the setup
+    var int cBar = na
+    var bool swept = false
+    var float maxHi = na
+    var float pa = na                     // first post-CHoCH swing (BOS reference)
+    var int paConf = na
+    var bool bos = false
+
+    ph = ta.pivothigh(hiS, swingLen, swingLen)
+    pl = ta.pivotlow(loS, swingLen, swingLen)
+
+    if not na(ph)
+        int sz1 = array.size(pvT)
+        if sz1 > 0 and array.get(pvT, sz1 - 1) == 1
+            if ph > array.get(pvP, sz1 - 1)
+                array.set(pvP, sz1 - 1, ph)
+        else
+            array.push(pvT, 1)
+            array.push(pvP, ph)
+        int sz2 = array.size(pvT)
+        if enable and st < 2 and strategy.position_size == 0 and sz2 >= 5
+            if array.get(pvT, sz2 - 5) == 1 and array.get(pvT, sz2 - 4) == -1 and array.get(pvT, sz2 - 3) == 1 and array.get(pvT, sz2 - 2) == -1 and array.get(pvT, sz2 - 1) == 1
+                h0 = array.get(pvP, sz2 - 5)
+                l1 = array.get(pvP, sz2 - 4)
+                h1 = array.get(pvP, sz2 - 3)
+                l2 = array.get(pvP, sz2 - 2)
+                h2 = array.get(pvP, sz2 - 1)
+                if h1 > h0 and l2 > l1 and h2 < h1
+                    st := 1
+                    lvl := l2
+                    lhP := h2
+                    protP := h1
+
+    if not na(pl)
+        int sz3 = array.size(pvT)
+        if sz3 > 0 and array.get(pvT, sz3 - 1) == -1
+            if pl < array.get(pvP, sz3 - 1)
+                array.set(pvP, sz3 - 1, pl)
+        else
+            array.push(pvT, -1)
+            array.push(pvP, pl)
+        if st == 2 and na(pa) and (bar_index - swingLen) > cBar
+            pa := pl
+            paConf := bar_index
+
+    if strategy.position_size != 0
+        st := 0
+        strategy.cancel(idEntry)
+    else if st == 1
+        if clS > protP
+            st := 0
+        else if clS < lvl
+            st := 2
+            cBar := bar_index
+            maxHi := hiS
+            swept := false
+            pa := na
+            paConf := na
+            bos := false
+            if showLabels
+                label.new(bar_index, sgn > 0 ? low : high, sgn > 0 ? "CHoCH v" : "CHoCH ^", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = sgn > 0 ? color.new(color.red, 20) : color.new(color.teal, 20), textcolor = color.white, size = size.tiny)
+    else if st == 2
+        if clS > protP or bar_index - cBar > expireBars
+            st := 0
+            strategy.cancel(idEntry)
+        else
+            if hiS > lhP
+                swept := true
+            maxHi := math.max(maxHi, hiS)
+            if not na(pa) and bar_index > paConf and clS < pa
+                bos := true
+            bool ok = (not requireSweep or swept) and (not requireBos or bos) and clS > lvl
+            float stopS = maxHi + stopBuf * atr
+            float rS = stopS - lvl
+            if ok and rS > 0
+                float qty = strategy.equity * riskPct / 100 / rS
+                strategy.entry(idEntry, sgn > 0 ? strategy.short : strategy.long, qty = qty, stop = sgn * lvl)
+                strategy.exit(idExit, idEntry, stop = sgn * stopS, limit = sgn * (lvl - rr * rS))
+            else
+                strategy.cancel(idEntry)
+    true
+
+f_icc(high, low, close, 1.0, enableShort, "ICC Short", "ICC Short exit")
+f_icc(-low, -high, -close, -1.0, enableLong, "ICC Long", "ICC Long exit")
+
+if holdBars > 0 and strategy.position_size != 0
+    if bar_index - strategy.opentrades.entry_bar_index(0) >= holdBars
+        strategy.close_all(comment = "time exit")
