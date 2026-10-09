@@ -44,6 +44,14 @@ export async function create({ condition, price, message }) {
     })()
   `);
 
+  if (!priceSet) {
+    // Don't create an alert at the dialog's default price: close the dialog and report failure.
+    const client = await getClient();
+    await client.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await client.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    return { success: false, price, condition, message: message || '(none)', price_set: false, error: 'Could not find the alert price field; no alert was created.', source: 'dom_fallback' };
+  }
+
   if (message) {
     await evaluate(`
       (function() {
