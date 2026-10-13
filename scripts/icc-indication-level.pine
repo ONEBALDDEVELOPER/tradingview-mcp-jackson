@@ -1,0 +1,268 @@
+//@version=6
+indicator("ICC Indication-Level Tracker", shorttitle="ICC-IL Trk", overlay=true, max_lines_count=200, max_labels_count=300)
+
+// Indicator version of the Indication-Level Entry Model (rules.json v4.2 / scripts/icc-indication-strategy.pine).
+//
+//   SELL: HH -> HL -> LH (failed HH, a WARNING only). The HL is the INDICATION LEVEL.
+//         A candle CLOSE below it = CHoCH. The correction then sweeps the LH (a wick above it).
+//         Entry = sell stop at the indication level once price is back above it and the LH is swept.
+//         Stop = just beyond the highest correction high (+ buffer). Target = R multiple of the stop distance.
+//         A close above the protected high (the HH) or too many bars since the CHoCH cancels the setup.
+//   BUY: exact mirror (failed LL, indication level = the LH, sweep the HL, protected low = the LL).
+//
+// Stages shown on the chart and in the table, on whatever timeframe the chart is on:
+//   1 Failed HH/LL (warning)  ->  2 CHoCH, correcting  ->  2b Swept  ->  3 ARMED  ->  4 In trade
+// BOS is supporting evidence only (not a gate), so it is not tracked here.
+
+grpM = "Model"
+swingLen     = input.int(5, "Swing length (bars each side)", minval=1, maxval=30, group=grpM, tooltip="Working rule: 5. A swing is confirmed this many bars after it forms, so every stage lags by that many bars.")
+requireSweep = input.bool(true, "Require sweep of the LH / HL before arming", group=grpM)
+expireBars   = input.int(80, "Setup expires after (bars since CHoCH)", minval=5, group=grpM)
+trackSell    = input.bool(true, "Track sells (failed HH)", group=grpM)
+trackBuy     = input.bool(true, "Track buys (failed LL)", group=grpM)
+
+grpR = "Stop / Target"
+stopBuf  = input.float(0.1, "Stop buffer (x ATR)", minval=0.0, step=0.05, group=grpR)
+rr       = input.float(3.0, "Target (R multiple)", minval=1.0, step=0.5, group=grpR, tooltip="Rule floor is 1:3. Aim for the next swing; the working backtest config used 7R.")
+holdBars = input.int(80, "Max bars in trade (0 = off)", minval=0, group=grpR)
+
+grpD = "Display"
+showLines  = input.bool(true, "Show level lines", group=grpD)
+showLabels = input.bool(true, "Show stage labels", group=grpD)
+showDash   = input.bool(true, "Show dashboard", group=grpD)
+dashPos    = input.string("Top Right", "Dashboard position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpD)
+sellCol    = input.color(color.new(#ef5350, 0), "Sell colour", group=grpD)
+buyCol     = input.color(color.new(#26a69a, 0), "Buy colour", group=grpD)
+liqCol     = input.color(color.new(#FF9800, 0), "Liquidity (LH / HL) colour", group=grpD)
+
+atrV = ta.atr(14)
+
+f_end(line l, color c, string sty) =>
+    if not na(l)
+        line.set_extend(l, extend.none)
+        line.set_x2(l, bar_index)
+        line.set_color(l, c)
+        line.set_style(l, sty)
+
+// One call per direction. Series are passed in "sell space": for buys they are negated, so the same code applies.
+// Real price = sgn * sell-space price (sgn = 1 for sells, -1 for buys).
+f_icc(float hiS, float loS, float clS, float sgn, bool enable) =>
+    var int[]   pvT = array.new_int()      // 1 = pivot high, -1 = pivot low (alternating list)
+    var float[] pvP = array.new_float()
+    var int[]   pvI = array.new_int()
+    var int   st = 0                       // 0 idle, 1 warning, 2 post-CHoCH, 4 in trade
+    var float lvl = na                     // indication level (the HL for sells)
+    var float lhP = na                     // the LH (sells) that must be swept
+    var float protP = na                   // protected high: a close beyond it kills the setup
+    var int   cBar = na
+    var int   eBar = na
+    var bool  swept = false
+    var float maxHi = na
+    var bool  pending = false
+    var float pStop = na
+    var float tgt = na
+    var line  lnLvl = na
+    var line  lnProt = na
+    var line  lnLh = na
+    var line  lnSl = na
+    var line  lnTp = na
+    color dirCol = sgn > 0 ? sellCol : buyCol
+    bool warnNow = false
+    bool chochNow = false
+    bool sweepNow = false
+    bool fillNow = false
+
+    ph = ta.pivothigh(hiS, swingLen, swingLen)
+    pl = ta.pivotlow(loS, swingLen, swingLen)
+
+    // 1. A sell stop placed at the previous bar's close fills when price trades down to the level
+    if enable and st == 2 and pending and loS <= lvl
+        st := 4
+        fillNow := true
+        eBar := bar_index
+        if showLines
+            lnSl := line.new(bar_index, sgn * pStop, bar_index + 1, sgn * pStop, extend = extend.right, color = color.new(sellCol, 0), style = line.style_dashed, width = 1)
+            lnTp := line.new(bar_index, sgn * tgt, bar_index + 1, sgn * tgt, extend = extend.right, color = color.new(buyCol, 0), style = line.style_dashed, width = 1)
+        if showLabels
+            label.new(bar_index, sgn * lvl, sgn > 0 ? "SELL ENTRY" : "BUY ENTRY", style = sgn > 0 ? label.style_label_left : label.style_label_left, color = dirCol, textcolor = color.white, size = size.small)
+    pending := false
+
+    // 2. Pivots, alternating list, failed HH pattern (sells) / failed LL pattern (buys)
+    if not na(ph)
+        int a = array.size(pvT)
+        if a > 0 and array.get(pvT, a - 1) == 1
+            if ph > array.get(pvP, a - 1)
+                array.set(pvP, a - 1, ph)
+                array.set(pvI, a - 1, bar_index - swingLen)
+        else
+            array.push(pvT, 1)
+            array.push(pvP, ph)
+            array.push(pvI, bar_index - swingLen)
+            if array.size(pvT) > 12
+                array.shift(pvT)
+                array.shift(pvP)
+                array.shift(pvI)
+        int b = array.size(pvT)
+        if enable and st < 2 and b >= 5
+            if array.get(pvT, b - 5) == 1 and array.get(pvT, b - 4) == -1 and array.get(pvT, b - 3) == 1 and array.get(pvT, b - 2) == -1 and array.get(pvT, b - 1) == 1
+                h0 = array.get(pvP, b - 5)
+                l1 = array.get(pvP, b - 4)
+                h1 = array.get(pvP, b - 3)
+                l2 = array.get(pvP, b - 2)
+                h2 = array.get(pvP, b - 1)
+                if h1 > h0 and l2 > l1 and h2 < h1
+                    if st == 1
+                        f_end(lnLvl, color.gray, line.style_dotted)
+                        f_end(lnProt, color.gray, line.style_dotted)
+                        f_end(lnLh, color.gray, line.style_dotted)
+                    st := 1
+                    warnNow := true
+                    lvl := l2
+                    lhP := h2
+                    protP := h1
+                    if showLines
+                        lnLvl  := line.new(array.get(pvI, b - 2), sgn * lvl,   bar_index, sgn * lvl,   extend = extend.right, color = dirCol, style = line.style_dashed, width = 1)
+                        lnProt := line.new(array.get(pvI, b - 3), sgn * protP, bar_index, sgn * protP, extend = extend.right, color = color.new(color.gray, 30), style = line.style_dotted, width = 1)
+                        lnLh   := line.new(array.get(pvI, b - 1), sgn * lhP,   bar_index, sgn * lhP,   extend = extend.right, color = liqCol, style = line.style_dotted, width = 1)
+                    if showLabels
+                        label.new(array.get(pvI, b - 1), sgn * h2, sgn > 0 ? "Failed HH" : "Failed LL", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = dirCol, textcolor = color.white, size = size.small)
+
+    if not na(pl)
+        int c = array.size(pvT)
+        if c > 0 and array.get(pvT, c - 1) == -1
+            if pl < array.get(pvP, c - 1)
+                array.set(pvP, c - 1, pl)
+                array.set(pvI, c - 1, bar_index - swingLen)
+        else
+            array.push(pvT, -1)
+            array.push(pvP, pl)
+            array.push(pvI, bar_index - swingLen)
+            if array.size(pvT) > 12
+                array.shift(pvT)
+                array.shift(pvP)
+                array.shift(pvI)
+
+    // 3. State machine
+    if st == 4 and not fillNow
+        bool hitSl = hiS >= pStop
+        bool hitTp = loS <= tgt
+        bool timeUp = holdBars > 0 and bar_index - eBar >= holdBars
+        if hitSl or hitTp or timeUp
+            st := 0
+            f_end(lnLvl, color.gray, line.style_dotted)
+            f_end(lnProt, color.gray, line.style_dotted)
+            f_end(lnLh, color.gray, line.style_dotted)
+            f_end(lnSl, color.new(sellCol, 0), line.style_dotted)
+            f_end(lnTp, color.new(buyCol, 0), line.style_dotted)
+            if showLabels
+                label.new(bar_index, hitSl ? sgn * pStop : hitTp ? sgn * tgt : close, hitSl ? "Stop" : hitTp ? "Target" : "Time exit", style = label.style_label_left, color = hitSl ? color.new(sellCol, 30) : hitTp ? color.new(buyCol, 30) : color.new(color.gray, 20), textcolor = color.white, size = size.tiny)
+    else if st == 1
+        if clS > protP
+            st := 0
+            f_end(lnLvl, color.gray, line.style_dotted)
+            f_end(lnProt, color.gray, line.style_dotted)
+            f_end(lnLh, color.gray, line.style_dotted)
+        else if clS < lvl
+            st := 2
+            chochNow := true
+            cBar := bar_index
+            maxHi := hiS
+            swept := false
+            if not na(lnLvl)
+                line.set_style(lnLvl, line.style_solid)
+            if showLabels
+                label.new(bar_index, sgn > 0 ? low : high, sgn > 0 ? "CHoCH ▼" : "CHoCH ▲", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = dirCol, textcolor = color.white, size = size.small)
+    else if st == 2
+        if clS > protP or bar_index - cBar > expireBars
+            st := 0
+            f_end(lnLvl, color.gray, line.style_dotted)
+            f_end(lnProt, color.gray, line.style_dotted)
+            f_end(lnLh, color.gray, line.style_dotted)
+        else
+            if hiS > lhP and not swept
+                swept := true
+                sweepNow := true
+                if showLabels
+                    label.new(bar_index, sgn * hiS, "Sweep", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = liqCol, textcolor = color.white, size = size.tiny)
+            maxHi := math.max(maxHi, hiS)
+            float stopS = maxHi + stopBuf * atrV
+            float rS = stopS - lvl
+            if (not requireSweep or swept) and clS > lvl and rS > 0
+                pending := true
+                pStop := stopS
+                tgt := lvl - rr * rS
+
+    [st, pending, swept, sgn * lvl, sgn * lhP, sgn * protP, sgn * pStop, sgn * tgt, warnNow, chochNow, sweepNow, fillNow]
+
+[stS, pendS, swS, lvlS, lhS, protS, slS, tpS, warnS, chochS, sweepS, fillS] = f_icc(high, low, close, 1.0, trackSell)
+[stB, pendB, swB, lvlB, lhB, protB, slB, tpB, warnB, chochB, sweepB, fillB] = f_icc(-low, -high, -close, -1.0, trackBuy)
+
+// How far along each side is (4 in trade, 3 armed, 2 correcting, 1 warning)
+f_rank(int st, bool pend) => st == 4 ? 4 : (st == 2 and pend) ? 3 : st
+rankS = f_rank(stS, pendS)
+rankB = f_rank(stB, pendB)
+useBuy = rankB > rankS
+
+f_phase(int st, bool pend, bool sw, bool isSell) =>
+    string d = isSell ? "SELL: " : "BUY: "
+    string fail = isSell ? "Failed HH (warning)" : "Failed LL (warning)"
+    string side = isSell ? "above" : "below"
+    st == 4 ? d + "IN TRADE" :
+     (st == 2 and pend) ? d + "ARMED, " + (isSell ? "sell" : "buy") + " stop at level" :
+     st == 2 ? (sw ? d + "swept, waiting for close " + side + " level" : d + "CHoCH done, correcting (no sweep yet)") :
+     st == 1 ? d + fail : "No setup"
+
+phSt   = useBuy ? stB : stS
+phPend = useBuy ? pendB : pendS
+phText = f_phase(phSt, phPend, useBuy ? swB : swS, not useBuy)
+phRank = useBuy ? rankB : rankS
+phBg   = phRank == 4 ? color.new(useBuy ? buyCol : sellCol, 30) :
+         phRank == 3 ? color.new(#FFD700, 35) :
+         phRank == 2 ? color.new(#2962FF, 45) :
+         phRank == 1 ? color.new(#FF9800, 40) : color.new(color.gray, 55)
+
+nz2(float v) => na(v) ? "—" : str.tostring(v, format.mintick)
+dLvl  = useBuy ? lvlB  : lvlS
+dLh   = useBuy ? lhB   : lhS
+dProt = useBuy ? protB : protS
+dSl   = useBuy ? slB   : slS
+dTp   = useBuy ? tpB   : tpS
+active = phRank > 0
+showRisk = phRank >= 3
+
+dPosC = dashPos == "Top Left"     ? position.top_left     :
+       dashPos == "Bottom Right" ? position.bottom_right :
+       dashPos == "Bottom Left"  ? position.bottom_left  : position.top_right
+
+var table dash = table.new(dPosC, 2, 7, bgcolor = color.new(#0D1117, 5), frame_color = color.new(color.white, 40), frame_width = 2, border_color = color.new(color.white, 75), border_width = 1)
+
+if barstate.islast and showDash
+    color lbl = color.new(color.white, 15)
+    table.cell(dash, 0, 0, "ICC INDICATION-LEVEL  |  " + timeframe.period, text_color = #FFD700, text_size = size.normal, bgcolor = color.new(#1E2A3A, 0), text_halign = text.align_center)
+    table.merge_cells(dash, 0, 0, 1, 0)
+    table.cell(dash, 0, 1, "Phase", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 1, phText, text_color = color.white, text_size = size.normal, bgcolor = phBg)
+    table.cell(dash, 0, 2, "Indication level", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 2, active ? nz2(dLvl) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 3, "Liquidity to sweep", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 3, active ? nz2(dLh) : "—", text_color = liqCol, text_size = size.normal)
+    table.cell(dash, 0, 4, "Protected level", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 4, active ? nz2(dProt) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 5, "Stop", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 5, showRisk ? nz2(dSl) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 6, "Target (" + str.tostring(rr, "#.#") + "R)", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 6, showRisk ? nz2(dTp) : "—", text_color = color.white, text_size = size.normal)
+
+armedS = pendS and not pendS[1]
+armedB = pendB and not pendB[1]
+
+alertcondition(warnS,  "Sell: Failed HH (warning)", "{{ticker}} {{interval}}: Failed HH. Warning only. Watch the HL for a candle close below it.")
+alertcondition(warnB,  "Buy: Failed LL (warning)",  "{{ticker}} {{interval}}: Failed LL. Warning only. Watch the LH for a candle close above it.")
+alertcondition(chochS, "Sell: CHoCH down",           "{{ticker}} {{interval}}: CHoCH down (close below the indication level). Wait for the correction and the sweep of the LH.")
+alertcondition(chochB, "Buy: CHoCH up",              "{{ticker}} {{interval}}: CHoCH up (close above the indication level). Wait for the correction and the sweep of the HL.")
+alertcondition(sweepS, "Sell: LH swept",             "{{ticker}} {{interval}}: Liquidity above the LH swept.")
+alertcondition(sweepB, "Buy: HL swept",              "{{ticker}} {{interval}}: Liquidity below the HL swept.")
+alertcondition(armedS, "Sell: ARMED at indication level", "{{ticker}} {{interval}}: Sell setup armed. Sell stop at the indication level.")
+alertcondition(armedB, "Buy: ARMED at indication level",  "{{ticker}} {{interval}}: Buy setup armed. Buy stop at the indication level.")
+alertcondition(fillS,  "Sell: entry at indication level", "{{ticker}} {{interval}}: Sell entry, price traded down to the indication level.")
+alertcondition(fillB,  "Buy: entry at indication level",  "{{ticker}} {{interval}}: Buy entry, price traded up to the indication level.")
