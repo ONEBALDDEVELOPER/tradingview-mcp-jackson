@@ -6,7 +6,8 @@ indicator("Rejection Candles (wick %)", shorttitle="Rejection", overlay=true, ma
 // Optional: the wick must also sweep a recent swing high/low and the candle must close back across it.
 
 wickPct      = input.float(50.0, "Min wick % of candle range", minval=1.0, maxval=100.0, step=1.0)
-minRange     = input.float(12.0, "Min candle range (price units)", minval=0.0, step=0.5, tooltip="Filters tiny candles. 12 suits XAUUSD on the 1H; lower it for smaller timeframes.")
+atrLen       = input.int(14, "ATR length", minval=1, maxval=200)
+minRangeATR  = input.float(1.0, "Min candle range (x ATR)", minval=0.0, step=0.1, tooltip="Filters tiny candles. Candle range must be at least this multiple of ATR, so it scales across symbols (forex, gold, indices) and timeframes.")
 requireSweep = input.bool(false, "Require sweep of recent swing + close back across")
 sweepLen     = input.int(20, "Sweep lookback (bars)", minval=2, maxval=200)
 showPct      = input.bool(true, "Show wick % in label")
@@ -24,7 +25,8 @@ priorHigh  = ta.highest(high, sweepLen)[1]
 sweptLow   = low < priorLow and close > priorLow
 sweptHigh  = high > priorHigh and close < priorHigh
 
-sizeOk     = rng >= minRange and barstate.isconfirmed
+atrVal     = ta.atr(atrLen)
+sizeOk     = rng >= atrVal * minRangeATR and barstate.isconfirmed
 bullRej    = sizeOk and lowerPct >= wickPct and (not requireSweep or sweptLow)
 bearRej    = sizeOk and upperPct >= wickPct and (not requireSweep or sweptHigh)
 
