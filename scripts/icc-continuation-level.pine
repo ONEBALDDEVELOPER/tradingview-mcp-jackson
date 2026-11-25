@@ -1,0 +1,340 @@
+//@version=6
+indicator("ICC Continuation Tracker", shorttitle="ICC-CT Trk", overlay=true, max_lines_count=300, max_labels_count=300, max_bars_back=500)
+
+// Continuation companion to "ICC Indication-Level Tracker" (the reversal tracker).
+//   BUY : trend is up (HH + HL). A line is drawn across the previous swing high. A candle CLOSE above it = a new HH
+//         = the INDICATION. Price then pulls back (CORRECTION) to the broken line and the buy is taken AT the line
+//         (break and retest), then price expands upward. The HL that made the break is the PROTECTED low.
+//   SELL: mirror image (LH + LL trend, line across the previous swing low, close below it = new LL).
+// Stages: INDICATION (BOS) -> CORRECTION near the line (ARMED) -> ENTRY at the line -> STOP / TARGET.
+// Invalidated by a close beyond the protected HL / LH before entry. Expires after expireBars.
+
+grpM = "Model"
+swingMode    = input.string("Auto (by timeframe)", "Swing length mode", options=["Auto (by timeframe)", "Manual"], group=grpM, tooltip="A swing is confirmed this many bars after it forms (same bars each side).")
+swingLtf     = input.int(3, "Auto: swing length on 1H and below", minval=1, maxval=30, group=grpM)
+swingHtf     = input.int(5, "Auto: swing length on 4H and above", minval=1, maxval=30, group=grpM)
+swingMan     = input.int(5, "Manual swing length", minval=1, maxval=30, group=grpM)
+pivSrc       = input.string("Body", "Swing high / low source", options=["Wick", "Body"], group=grpM, tooltip="Body: swing highs / lows and the indication line are taken from candle bodies (open/close). Wick: from the highs and lows.")
+needTrend    = input.bool(true, "Require established trend (prior HH + HL / LL + LH)", group=grpM)
+brkBuf       = input.float(0.0, "Break buffer (x ATR beyond the swing)", minval=0.0, step=0.05, group=grpM, tooltip="A candle must CLOSE this far beyond the swing to count as the break.")
+maxAge       = input.int(100, "Swing must be younger than (bars)", minval=10, group=grpM)
+entryMode    = input.string("On the break", "Entry", options=["On the break", "On the retest of the line"], group=grpM, tooltip="On the break: the trade is taken when a candle closes beyond the line (entry = that close). On the retest: wait for price to come back to the line and enter there.")
+armDist      = input.float(1.0, "ARMED when price is within (x ATR) of the line", minval=0.1, step=0.1, group=grpM)
+expireBars   = input.int(60, "Setup expires after (bars since the break)", minval=5, group=grpM)
+trackBuy     = input.bool(true, "Track buys", group=grpM)
+trackSell    = input.bool(true, "Track sells", group=grpM)
+blockOpp     = input.bool(true, "One direction at a time", group=grpM)
+replaceOld   = input.bool(true, "A fresher break replaces an unfilled older setup", group=grpM, tooltip="If price never came back to an older line and then breaks a newer swing, the newer break takes over (the older line is greyed). Off = the older setup keeps blocking until it is filled, invalidated or expires.")
+
+grpR = "Stop / Target"
+stopMode   = input.string("Protected HL/LH", "Stop placement", options=["Protected HL/LH", "Lowest low since break"], group=grpR)
+stopBuf    = input.float(0.1, "Stop buffer (x ATR)", minval=0.0, step=0.05, group=grpR)
+rr         = input.float(3.0, "Target (R multiple)", minval=1.0, step=0.5, group=grpR)
+minRiskAtr = input.float(0.5, "Min risk (x ATR)", minval=0.0, step=0.1, group=grpR)
+maxRiskAtr = input.float(8.0, "Max risk (x ATR, 0 = off)", minval=0.0, step=0.5, group=grpR)
+holdBars   = input.int(80, "Max bars in trade (0 = off)", minval=0, group=grpR)
+
+grpD = "Display"
+showLines  = input.bool(true, "Show level lines", group=grpD)
+showLabels = input.bool(true, "Show stage labels", group=grpD)
+showDash   = input.bool(true, "Show dashboard", group=grpD)
+dashPos    = input.string("Top Right", "Dashboard position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpD)
+lblSizeIn  = input.string("Small", "Label size", options=["Tiny", "Small", "Normal", "Large"], group=grpD)
+keepDone   = input.bool(true, "Keep finished setups on the chart (grey)", group=grpD)
+buyCol     = input.color(color.new(#26a69a, 0), "Buy colour", group=grpD)
+sellCol    = input.color(color.new(#ef5350, 0), "Sell colour", group=grpD)
+
+grpA = "Alerts"
+alertMsgs = input.bool(true, "Detailed alert() messages with price levels", group=grpA, tooltip="Create ONE alert on this indicator with condition 'Any alert() function call'.")
+
+atr = ta.atr(14)
+swingLen = swingMode == "Manual" ? swingMan : (timeframe.in_seconds() <= 3600 ? swingLtf : swingHtf)
+lblSize = lblSizeIn == "Tiny" ? size.tiny : lblSizeIn == "Normal" ? size.normal : lblSizeIn == "Large" ? size.large : size.small
+dPosC = dashPos == "Top Left" ? position.top_left : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+greyC = color.new(color.gray, 35)
+
+// Adds a pivot to the alternating list; consecutive pivots of the same type keep only the more extreme one.
+// pvW = the wick extreme of the pivot candle (used for the stop).
+f_addPivot(int[] pvT, float[] pvP, int[] pvI, float[] pvW, int typ, float p, int idx, float w) =>
+    int n = array.size(pvT)
+    if n > 0 and array.get(pvT, n - 1) == typ
+        if typ == 1 ? p > array.get(pvP, n - 1) : p < array.get(pvP, n - 1)
+            array.set(pvP, n - 1, p)
+            array.set(pvI, n - 1, idx)
+            array.set(pvW, n - 1, w)
+    else
+        array.push(pvT, typ)
+        array.push(pvP, p)
+        array.push(pvI, idx)
+        array.push(pvW, w)
+        if array.size(pvT) > 12
+            array.shift(pvT)
+            array.shift(pvP)
+            array.shift(pvI)
+            array.shift(pvW)
+    array.size(pvT)
+
+// Everything is written in "up space": buys use the real series, sells use negated series (sgn = -1).
+// Real price = sgn * up-space price. Returns [stage, level, protected, stop, target, event].
+// Stages: 0 none, 1 indication done (waiting for the correction), 2 correcting near the line (ARMED), 3 in the trade.
+// Events (this bar): 1 BOS, 2 ARMED, 3 ENTRY, 4 INVALIDATED, 5 EXPIRED, 6 STOP, 7 TARGET, 8 TIME EXIT, 9 SKIPPED (risk size).
+f_ct(float hiS, float loS, float opS, float clS, float hiW, float loW, float sgn, bool enable, bool allowNew) =>
+    var int[]   pvT = array.new_int()
+    var float[] pvP = array.new_float()
+    var int[]   pvI = array.new_int()
+    var float[] pvW = array.new_float()
+    var int st = 0
+    var float lvl = na
+    var float protP = na
+    var float protW = na
+    var int bBar = na
+    var int eBar = na
+    var float minLo = na
+    var float stopS = na
+    var float entP = na
+    var float tgtS = na
+    var int lastUsedL = -1
+    var line lnL = na
+    var line lnP = na
+    var line lnSl = na
+    var line lnTp = na
+    var label lbA = na
+    int evt = 0
+    color c = sgn > 0 ? buyCol : sellCol
+    string tag = (sgn > 0 ? "BUY " : "SELL ")
+    float atrv = nz(atr, 0.0)
+
+    ph = ta.pivothigh(hiS, swingLen, swingLen)
+    pl = ta.pivotlow(loS, swingLen, swingLen)
+    int pIdx = bar_index - swingLen
+    // a candle can be both a swing high and a swing low in Body mode: add them in candle order
+    bool lowFirst = not na(ph) and not na(pl) and clS[swingLen] >= opS[swingLen]
+    if lowFirst
+        f_addPivot(pvT, pvP, pvI, pvW, -1, pl, pIdx, loW[swingLen])
+    if not na(ph)
+        f_addPivot(pvT, pvP, pvI, pvW, 1, ph, pIdx, hiW[swingLen])
+    if not na(pl) and not lowFirst
+        f_addPivot(pvT, pvP, pvI, pvW, -1, pl, pIdx, loW[swingLen])
+
+    if not enable
+        st := 0
+    bool look = enable and (st == 0 or (replaceOld and (st == 1 or st == 2)))
+    if look
+        int n = array.size(pvT)
+        int iL = -1
+        if n >= 1
+            iL := array.get(pvT, n - 1) == -1 ? n - 1 : (n >= 2 ? n - 2 : -1)
+        if allowNew and iL >= 3 and atrv > 0
+            float l1 = array.get(pvP, iL)
+            int   l1i = array.get(pvI, iL)
+            float h1 = array.get(pvP, iL - 1)
+            int   h1i = array.get(pvI, iL - 1)
+            float l0 = array.get(pvP, iL - 2)
+            float h0 = array.get(pvP, iL - 3)
+            float ref = h1
+            int   refI = h1i
+            if iL + 1 < n and array.get(pvP, iL + 1) > ref
+                ref := array.get(pvP, iL + 1)
+                refI := array.get(pvI, iL + 1)
+            bool trendOk = not needTrend or (h1 > h0 and l1 > l0)
+            bool fresh = bar_index - refI <= maxAge and l1i > lastUsedL
+            if trendOk and l1 > l0 and fresh and bar_index > l1i + swingLen and clS > ref + brkBuf * atrv and clS > l1
+                if st > 0
+                    if not na(lnL)
+                        line.set_color(lnL, greyC)
+                    if not na(lnP)
+                        line.set_color(lnP, greyC)
+                st := 1
+                evt := 1
+                lvl := ref
+                protP := l1
+                protW := array.get(pvW, iL)
+                bBar := bar_index
+                eBar := na
+                minLo := loW
+                lastUsedL := l1i
+                stopS := na
+                tgtS := na
+                lnSl := na
+                lnTp := na
+                if showLines
+                    lnL := line.new(refI, sgn * ref, bar_index, sgn * ref, color = c, style = line.style_dashed, width = 2)
+                    lnP := line.new(l1i, sgn * l1, bar_index, sgn * l1, color = color.new(c, 60), style = line.style_dotted)
+                if showLabels
+                    lbA := label.new(bar_index, sgn * lvl, tag + "Indication: new " + (sgn > 0 ? "HH" : "LL") + " " + str.tostring(sgn * lvl, format.mintick), style = sgn > 0 ? label.style_label_up : label.style_label_down, color = color.new(c, 15), textcolor = color.white, size = lblSize)
+                if entryMode == "On the break"
+                    float sB = protW - stopBuf * atrv
+                    float rB = clS - sB
+                    bool okB = rB >= minRiskAtr * atrv and (maxRiskAtr == 0 or rB <= maxRiskAtr * atrv)
+                    if okB
+                        st := 3
+                        evt := 3
+                        eBar := bar_index
+                        entP := clS
+                        stopS := sB
+                        tgtS := clS + rr * rB
+                        if showLines
+                            lnSl := line.new(bar_index, sgn * stopS, bar_index + 1, sgn * stopS, color = color.new(color.red, 0), style = line.style_solid)
+                            lnTp := line.new(bar_index, sgn * tgtS, bar_index + 1, sgn * tgtS, color = color.new(color.lime, 0), style = line.style_solid)
+                        if showLabels
+                            label.new(bar_index, sgn * clS, tag + "ENTRY (break) " + str.tostring(sgn * clS, format.mintick), style = sgn > 0 ? label.style_label_up : label.style_label_down, color = color.new(c, 0), textcolor = color.white, size = lblSize)
+                    else
+                        st := 0
+                        evt := 9
+    if (st == 1 or st == 2) and bBar != bar_index
+        minLo := math.min(minLo, loW)
+        bool touched = bar_index > bBar and loW <= lvl
+        if touched
+            // ENTRY at the line
+            float sS = stopMode == "Protected HL/LH" ? protW - stopBuf * atrv : math.min(minLo, lvl - minRiskAtr * atrv) - stopBuf * atrv
+            float rS = lvl - sS
+            bool riskOk = rS >= minRiskAtr * atrv and (maxRiskAtr == 0 or rS <= maxRiskAtr * atrv)
+            if riskOk
+                st := 3
+                evt := 3
+                eBar := bar_index
+                stopS := sS
+                tgtS := lvl + rr * rS
+                if showLines
+                    lnSl := line.new(bar_index, sgn * stopS, bar_index + 1, sgn * stopS, color = color.new(color.red, 0), style = line.style_solid)
+                    lnTp := line.new(bar_index, sgn * tgtS, bar_index + 1, sgn * tgtS, color = color.new(color.lime, 0), style = line.style_solid)
+                if showLabels
+                    label.new(bar_index, sgn * lvl, tag + "ENTRY " + str.tostring(sgn * lvl, format.mintick), style = sgn > 0 ? label.style_label_up : label.style_label_down, color = color.new(c, 0), textcolor = color.white, size = lblSize)
+                // same-bar stop (conservative)
+                if loW <= stopS
+                    evt := 6
+                    st := 0
+            else
+                evt := 9
+                st := 0
+        else if clS < protP
+            evt := 4
+            st := 0
+        else if bar_index - bBar > expireBars
+            evt := 5
+            st := 0
+        else
+            if st == 1 and loW <= lvl + armDist * atrv
+                st := 2
+                evt := 2
+                if showLabels
+                    label.new(bar_index, sgn * lvl, tag + "ARMED", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = color.new(color.orange, 10), textcolor = color.white, size = lblSize)
+        if not na(lnL)
+            line.set_x2(lnL, bar_index)
+        if not na(lnP)
+            line.set_x2(lnP, bar_index)
+        if st == 0 and evt != 6
+            if not na(lnL)
+                line.set_x2(lnL, bar_index)
+                line.set_color(lnL, greyC)
+            if not na(lnP)
+                line.set_color(lnP, greyC)
+            if not keepDone
+                line.delete(lnL)
+                line.delete(lnP)
+            if showLabels and evt != 9
+                label.new(bar_index, sgn * lvl, tag + (evt == 4 ? "INVALIDATED (close " + (sgn > 0 ? "below " : "above ") + str.tostring(sgn * protP, format.mintick) + ")" : "EXPIRED"), style = sgn > 0 ? label.style_label_down : label.style_label_up, color = color.new(color.gray, 20), textcolor = color.white, size = lblSize)
+    else if st == 3
+        if not na(lnSl)
+            line.set_x2(lnSl, bar_index)
+        if not na(lnTp)
+            line.set_x2(lnTp, bar_index)
+        if not na(lnL)
+            line.set_x2(lnL, bar_index)
+        int ex = 0
+        if bar_index > eBar
+            if loW <= stopS
+                ex := 6
+            else if hiW >= tgtS
+                ex := 7
+            else if holdBars > 0 and bar_index - eBar >= holdBars
+                ex := 8
+        if ex > 0
+            evt := ex
+            st := 0
+            float px = ex == 6 ? stopS : ex == 7 ? tgtS : clS
+            if showLabels
+                label.new(bar_index, sgn * px, tag + (ex == 6 ? "STOP" : ex == 7 ? "TARGET" : "TIME EXIT") + " " + str.tostring(sgn * px, format.mintick), style = sgn > 0 ? (ex == 7 ? label.style_label_down : label.style_label_up) : (ex == 7 ? label.style_label_up : label.style_label_down), color = ex == 7 ? color.new(color.lime, 10) : color.new(color.red, 10), textcolor = color.white, size = lblSize)
+            if not na(lnL)
+                line.set_color(lnL, greyC)
+            if not na(lnP)
+                line.set_color(lnP, greyC)
+            if not keepDone
+                line.delete(lnL)
+                line.delete(lnP)
+                line.delete(lnSl)
+                line.delete(lnTp)
+    [st, sgn * lvl, sgn * protP, sgn * stopS, sgn * tgtS, evt]
+
+float hiBody = math.max(open, close)
+float loBody = math.min(open, close)
+float hiPiv = pivSrc == "Body" ? hiBody : high
+float loPiv = pivSrc == "Body" ? loBody : low
+var int stBp = 0
+var int stSp = 0
+[stB, lvB, prB, slB, tpB, evB] = f_ct(hiPiv, loPiv, open, close, high, low, 1.0, trackBuy, not (blockOpp and stSp > 0))
+[stS, lvS, prS, slS, tpS, evS] = f_ct(-loPiv, -hiPiv, -open, -close, -low, -high, -1.0, trackSell, not (blockOpp and stBp > 0))
+stBp := stB
+stSp := stS
+
+// ---------- alerts ----------
+f_alert(int ev, float sgn, float lvl, float prot, float sl, float tp) =>
+    if alertMsgs and ev > 0
+        string t = (sgn > 0 ? "BUY continuation: " : "SELL continuation: ")
+        string sL = str.tostring(lvl, format.mintick)
+        string sP = str.tostring(prot, format.mintick)
+        string m = ev == 1 ? "Indication. Closed " + (sgn > 0 ? "above" : "below") + " the swing = new " + (sgn > 0 ? "HH" : "LL") + ". Watch for the correction back to " + sL + ". Invalid on a close " + (sgn > 0 ? "below " : "above ") + sP + "." :
+         ev == 2 ? "ARMED. Price is correcting toward the line " + sL + "." :
+         ev == 3 ? "ENTRY at " + sL + ". Stop " + str.tostring(sl, format.mintick) + ", target " + str.tostring(tp, format.mintick) + "." :
+         ev == 4 ? "INVALIDATED. Closed " + (sgn > 0 ? "below " : "above ") + sP + " (protected level)." :
+         ev == 5 ? "EXPIRED. " + str.tostring(expireBars) + " bars passed since the break." :
+         ev == 6 ? "STOP hit." :
+         ev == 7 ? "TARGET hit." :
+         ev == 8 ? "time exit after " + str.tostring(holdBars) + " bars." : "skipped (stop distance outside the min/max risk)."
+        alert(t + m, alert.freq_once_per_bar_close)
+    true
+f_alert(evB, 1.0, lvB, prB, slB, tpB)
+f_alert(evS, -1.0, lvS, prS, slS, tpS)
+
+alertcondition(evB == 1, "Buy: Indication (new HH)", "{{ticker}} {{interval}}: Buy continuation indication (close above the swing high). Watch for the retest.")
+alertcondition(evS == 1, "Sell: Indication (new LL)", "{{ticker}} {{interval}}: Sell continuation indication (close below the swing low). Watch for the retest.")
+alertcondition(evB == 2, "Buy: ARMED", "{{ticker}} {{interval}}: Buy continuation armed. Price correcting toward the line.")
+alertcondition(evS == 2, "Sell: ARMED", "{{ticker}} {{interval}}: Sell continuation armed. Price correcting toward the line.")
+alertcondition(evB == 3, "Buy: entry at the line", "{{ticker}} {{interval}}: Buy continuation entry at the line.")
+alertcondition(evS == 3, "Sell: entry at the line", "{{ticker}} {{interval}}: Sell continuation entry at the line.")
+alertcondition(evB == 4 or evS == 4, "Setup INVALIDATED", "{{ticker}} {{interval}}: Continuation setup invalidated.")
+alertcondition(evB == 6 or evS == 6, "Stop hit", "{{ticker}} {{interval}}: Continuation stop hit.")
+alertcondition(evB == 7 or evS == 7, "Target hit", "{{ticker}} {{interval}}: Continuation target hit.")
+
+// ---------- dashboard ----------
+f_ph(int st, int sgnI) =>
+    st == 1 ? "INDICATION done, wait for the correction" : st == 2 ? "CORRECTING near the line (ARMED)" : st == 3 ? "IN TRADE" : "No setup"
+bool actB = stB > 0
+bool actS = stS > 0
+bool useB = actB or not actS
+int dSt = useB ? stB : stS
+float dLvl = useB ? lvB : lvS
+float dPr = useB ? prB : prS
+float dSl = useB ? slB : slS
+float dTp = useB ? tpB : tpS
+bool act = dSt > 0
+bool risk = dSt == 3
+color dc = not act ? color.new(color.gray, 30) : (useB ? buyCol : sellCol)
+nz2(float v) => na(v) ? "—" : str.tostring(v, format.mintick)
+var table dash = table.new(dPosC, 2, 7, bgcolor = color.new(#0D1117, 5), frame_color = color.new(color.white, 40), frame_width = 2, border_color = color.new(color.white, 70), border_width = 1)
+lbl = color.new(color.white, 25)
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "ICC CONTINUATION  |  " + timeframe.period, text_color = #FFD700, text_size = size.normal, bgcolor = color.new(#1E2A3A, 0), text_halign = text.align_center)
+    table.merge_cells(dash, 0, 0, 1, 0)
+    table.cell(dash, 0, 1, "Phase", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 1, (act ? (useB ? "BUY: " : "SELL: ") : "") + f_ph(dSt, 0), text_color = color.white, text_size = size.normal, bgcolor = color.new(dc, 40))
+    table.cell(dash, 0, 2, "Indication line (entry)", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 2, act ? nz2(dLvl) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 3, "Invalid if close beyond", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 3, act ? nz2(dPr) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 4, "Stop", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 4, risk ? nz2(dSl) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 5, "Target (" + str.tostring(rr, "#.#") + "R)", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 5, risk ? nz2(dTp) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 6, "Swing length", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 6, str.tostring(swingLen) + (swingMode == "Manual" ? " (manual)" : " (auto)") + " | " + pivSrc, text_color = color.white, text_size = size.normal)

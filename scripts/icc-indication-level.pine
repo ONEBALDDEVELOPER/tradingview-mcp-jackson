@@ -14,12 +14,22 @@ indicator("ICC Indication-Level Tracker", shorttitle="ICC-IL Trk", overlay=true,
 //   1 Failed HH/LL (warning)  ->  2 CHoCH, correcting  ->  2b Swept  ->  3 ARMED  ->  4 In trade
 // BOS is supporting evidence only (not a gate), so it is not tracked here.
 
+grpT = "Timeframes"
+showDaily = input.bool(true, "Show on Daily", group=grpT)
+show4H    = input.bool(true, "Show on 4H", group=grpT)
+show1H    = input.bool(false, "Show on 1H", group=grpT, tooltip="Off by default. Turn on to see the levels when the chart is on the 1H.")
+show15m   = input.bool(false, "Show on 15m", group=grpT, tooltip="Off by default. Turn on to see the levels when the chart is on the 15m.")
+int tfSec = timeframe.in_seconds()
+tfOn = timeframe.isdaily ? showDaily : tfSec == 14400 ? show4H : tfSec == 3600 ? show1H : tfSec == 900 ? show15m : false
+
 grpM = "Model"
-swingMode    = input.string("Auto (by timeframe)", "Swing length mode", options=["Auto (by timeframe)", "Manual"], group=grpM, tooltip="A swing is confirmed this many bars after it forms. Too long on a low timeframe hides real swings (a 5-bar swing on the 5m needs 25 minutes of clean structure). Auto uses the two lengths below.")
+swingMode   = input.string("Auto (by timeframe)", "Swing length mode", options=["Auto (by timeframe)", "Manual"], group=grpM, tooltip="A swing is confirmed this many bars after it forms. Too long on a low timeframe hides real swings (a 5-bar swing on the 5m needs 25 minutes of clean structure). Auto uses the two lengths below.")
 swingLtf     = input.int(3, "Auto: swing length on 1H and below", minval=1, maxval=30, group=grpM)
 swingHtf     = input.int(5, "Auto: swing length on 4H and above", minval=1, maxval=30, group=grpM, tooltip="Working rule: 5. The 1H and below use the shorter length because a 5-bar swing hides minor swings that price actually respected (e.g. a lower high that a 5-bar window swallows).")
 swingMan     = input.int(5, "Manual swing length", minval=1, maxval=30, group=grpM)
 eqTol        = input.float(0.25, "Equal-high/low tolerance (x ATR)", minval=0.0, step=0.05, group=grpM, tooltip="Equal highs / lows count as the same level. Failed HH: the first high only has to be at or above the one before it within this distance (a double top), and the failed high may sit within it of the first. The higher low may also dip below the previous swing low if every candle CLOSED above it (a wick sweep, not a break). 0 = strict.")
+lvlSrc       = input.string("Body edge", "Indication level source", options=["Wick", "Body edge"], group=grpM, tooltip="Wick: the level is the extreme of the HL / LH candle (its low for sells, its high for buys). Body edge: the level is the edge of that candle's body (min of open/close for sells, max of open/close for buys), so a wick that only swept liquidity is ignored. The liquidity line and the protected level always stay on wicks. Setups are tagged '(body)' on the chart and in the alerts so the two modes can be compared in the forward test.")
+pivSrc       = input.string("Body", "Swing high / low source", options=["Wick", "Body"], group=grpM, tooltip="Body: swing highs and lows (HH, HL, LH, LL) are taken from the candle BODY (the higher / lower of open and close), so a wick spike never makes a swing point. Wick: the classic high / low of the candle. The sweep check, stop and target still use wicks, because a sweep is by definition a wick beyond the level.")
 swingLen     = swingMode == "Manual" ? swingMan : (timeframe.in_seconds() <= 3600 ? swingLtf : swingHtf)
 sweepMode    = input.string("Optional (flag it)", "Liquidity sweep before entry", options=["Optional (flag it)", "Required"], group=grpM, tooltip="Required: the correction must wick beyond the LH (sells) / HL (buys) before the entry arms (rules.json v4.2). Optional: the entry arms without it and is marked '(no sweep)' on the chart and in the alerts, so the two kinds can be compared in the forward test.")
 requireSweep = sweepMode == "Required"
@@ -50,7 +60,12 @@ grpA = "Alerts"
 alertMsgs = input.bool(true, "Detailed alert() messages with price levels", group=grpA, tooltip="Create ONE alert on this indicator with condition 'Any alert() function call'. Every stage (warning, CHoCH, sweep, armed, entry, invalidation, expiry, stop, target) then sends a message that includes the exact levels. The per-event alert conditions below stay available if you prefer separate alerts.")
 chochBuf = input.float(0.25, "CHoCH clean-close buffer (x ATR)", minval=0.0, step=0.05, group=grpM, tooltip="A candle must close this far beyond the indication level to count as the CHoCH. A close that only just clears it (a few ticks) is not a clean break and is ignored; the setup stays on watch. 0 = any close beyond the level.")
 showTags = input.bool(true, "Label the protected and liquidity lines", group=grpD, tooltip="Adds a label at the end of the protected line ('Invalid above 4697.10': a close beyond it kills the setup) and of the liquidity line ('Liquidity 4653.43': the level the correction must sweep).")
+invMode  = input.string("Keep (grey)", "Invalidated setups", options=["Keep (grey)", "Hide after N bars", "Remove immediately"], group=grpD, tooltip="What happens to a setup's lines and labels once a candle CLOSES beyond its protected level (a wick through it does not invalidate). Keep: they stay, greyed out and dotted, until they leave the lookback window. Hide after N bars: they are deleted N bars after the invalidation. Remove immediately: they are deleted on the next bar. Expired, stopped and target setups are not affected.")
+invBars  = input.int(20, "Hide invalidated setups after (bars)", minval=1, group=grpD, tooltip="Only used when 'Invalidated setups' is 'Hide after N bars'.")
+finMode  = input.string("Hide after N bars", "Setups that hit stop / target", options=["Keep", "Hide after N bars", "Remove immediately"], group=grpD, tooltip="What happens to a setup's lines and labels once its trade ends at the stop, the target or the max-bars time exit. Keep: they stay until they leave the lookback window. Hide after N bars: they are deleted N bars after the exit, so you still see the result for a moment. Remove immediately: they are deleted on the next bar.")
+finBars  = input.int(10, "Hide stop / target setups after (bars)", minval=1, group=grpD, tooltip="Only used when 'Setups that hit stop / target' is 'Hide after N bars'.")
 blockOpp = input.bool(true, "One direction at a time", group=grpM, tooltip="While a sell setup is alive (from the failed HH until it is invalidated, expires, or is closed), no buy setup is started, and the other way round. Stops opposite setups from cluttering the same area.")
+rearm    = input.bool(true, "Re-arm after a stop (structure intact)", group=grpM, tooltip="When a trade is stopped out but price has NOT closed beyond the protected level and the setup has not expired, the structure is still valid, so the setup goes back to 'correcting' and can arm again on the next retest of the indication level (the stopped attempt's stop/target lines are finished and the old stop is replaced by a new one above the new correction high). Off: a stop ends the setup, as before. Target hits and the max-bars time exit always end the setup. Added at the END of the inputs so existing saved settings keep their place.")
 
 atrV = ta.atr(14)
 
@@ -69,12 +84,38 @@ f_end(line l, color c, string sty) =>
         line.set_color(l, c)
         line.set_style(l, sty)
 
+// Adds a pivot to the alternating high/low list, or, if the last pivot is the same type, moves it when this one is more extreme.
+f_addPivot(int[] pvT, float[] pvP, int[] pvI, float[] pvB, int typ, float p, int idx, float bodyEdge) =>
+    int n = array.size(pvT)
+    if n > 0 and array.get(pvT, n - 1) == typ
+        if typ == 1 ? p > array.get(pvP, n - 1) : p < array.get(pvP, n - 1)
+            array.set(pvP, n - 1, p)
+            array.set(pvI, n - 1, idx)
+            array.set(pvB, n - 1, bodyEdge)
+    else
+        array.push(pvT, typ)
+        array.push(pvP, p)
+        array.push(pvI, idx)
+        array.push(pvB, bodyEdge)
+        if array.size(pvT) > 12
+            array.shift(pvT)
+            array.shift(pvP)
+            array.shift(pvI)
+            array.shift(pvB)
+    array.size(pvT)
+
 // One call per direction. Series are passed in "sell space": for buys they are negated, so the same code applies.
 // Real price = sgn * sell-space price (sgn = 1 for sells, -1 for buys).
-f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
+f_icc(float hiS, float loS, float opS, float clS, float sgn, bool enable, bool allowNew) =>
     var int[]   pvT = array.new_int()      // 1 = pivot high, -1 = pivot low (alternating list)
     var float[] pvP = array.new_float()
     var int[]   pvI = array.new_int()
+    var label[] evLbl = array.new_label()  // CHoCH / sweep / failed-HH labels of the current setup
+    var line[]  deadLn = array.new_line()  // drawings of invalidated setups waiting to be deleted
+    var int[]   deadLnAt = array.new_int()
+    var label[] deadLb = array.new_label()
+    var int[]   deadLbAt = array.new_int()
+    var float[] pvB = array.new_float()    // body edge of each pivot candle (sell space), captured when the pivot is confirmed
     var int   st = 0                       // 0 idle, 1 warning, 2 post-CHoCH, 4 in trade
     var float lvl = na                     // indication level (the HL for sells)
     var float lhP = na                     // the LH (sells) that must be swept
@@ -106,10 +147,27 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
     bool fillNow = false
     int cancelNow = 0                      // 1 protected level broken before CHoCH, 2 broken after CHoCH, 3 expired
     int exitNow = 0                        // 1 stop, 2 target, 3 time exit
+    bool rearmNow = false                  // the stop was hit but the structure is intact, so the setup goes back to correcting
     var bool prevPend = false
 
-    ph = ta.pivothigh(hiS, swingLen, swingLen)
-    pl = ta.pivotlow(loS, swingLen, swingLen)
+    // Drawings of invalidated setups: delete them once their time is up
+    if array.size(deadLn) > 0
+        for i = array.size(deadLn) - 1 to 0
+            if bar_index > array.get(deadLnAt, i)
+                line.delete(array.get(deadLn, i))
+                array.remove(deadLn, i)
+                array.remove(deadLnAt, i)
+    if array.size(deadLb) > 0
+        for i = array.size(deadLb) - 1 to 0
+            if bar_index > array.get(deadLbAt, i)
+                label.delete(array.get(deadLb, i))
+                array.remove(deadLb, i)
+                array.remove(deadLbAt, i)
+
+    float pivHiSrc = pivSrc == "Body" ? math.max(opS, clS) : hiS
+    float pivLoSrc = pivSrc == "Body" ? math.min(opS, clS) : loS
+    ph = ta.pivothigh(pivHiSrc, swingLen, swingLen)
+    pl = ta.pivotlow(pivLoSrc, swingLen, swingLen)
 
     // 1. A sell stop placed at the previous bar's close fills when price trades down to the level
     if enable and st == 2 and pending and loS <= lvl
@@ -125,20 +183,17 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
     pending := false
 
     // 2. Pivots, alternating list, failed HH pattern (sells) / failed LL pattern (buys)
+    // One candle can be BOTH a swing high and a swing low (body mode: a big candle holding the highest and the lowest body of its window).
+    // Add the two in the order price travelled through the candle (up candle: low first, then high; down candle: high first, then low),
+    // otherwise the high is swallowed as a "lower consecutive high" and the pattern never forms.
+    float bodyHiP = math.max(opS[swingLen], clS[swingLen])
+    float bodyLoP = math.min(opS[swingLen], clS[swingLen])
+    bool lowFirst = not na(ph) and not na(pl) and clS[swingLen] >= opS[swingLen]
+    if lowFirst
+        f_addPivot(pvT, pvP, pvI, pvB, -1, pl, bar_index - swingLen, bodyLoP)
+
     if not na(ph)
-        int a = array.size(pvT)
-        if a > 0 and array.get(pvT, a - 1) == 1
-            if ph > array.get(pvP, a - 1)
-                array.set(pvP, a - 1, ph)
-                array.set(pvI, a - 1, bar_index - swingLen)
-        else
-            array.push(pvT, 1)
-            array.push(pvP, ph)
-            array.push(pvI, bar_index - swingLen)
-            if array.size(pvT) > 12
-                array.shift(pvT)
-                array.shift(pvP)
-                array.shift(pvI)
+        f_addPivot(pvT, pvP, pvI, pvB, 1, ph, bar_index - swingLen, bodyHiP)
         int b = array.size(pvT)
         if enable and allowNew and st < 2 and b >= 5
             if array.get(pvT, b - 5) == 1 and array.get(pvT, b - 4) == -1 and array.get(pvT, b - 3) == 1 and array.get(pvT, b - 2) == -1 and array.get(pvT, b - 1) == 1
@@ -157,13 +212,15 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
                 bool hlOk = l2 > l1 - eqTol * atrV or l1Held
                 if h1 > h0 - eqTol * atrV and hlOk and h2 < h1 + eqTol * atrV
                     float protC = math.max(h1, h2)
+                    // Indication level: the HL wick low, or the edge of that candle's body
+                    float lvlC = lvlSrc == "Body edge" ? array.get(pvB, b - 2) : l2
                     // The swing confirms swingLen bars late: look back over those bars for the REAL break of the level
                     int brk = -1
                     bool dead = false
                     for k = swingLen - 1 to 0
                         if clS[k] > protC
                             dead := true
-                        else if brk < 0 and not dead and clS[k] < l2 - chochBuf * atrV
+                        else if brk < 0 and not dead and clS[k] < lvlC - chochBuf * atrV
                             brk := k
                     if not dead
                         if st == 1
@@ -172,6 +229,7 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
                             f_end(lnLh, color.gray, line.style_dotted)
                         st := 1
                         warnNow := true
+                        array.clear(evLbl)
                         lbLvl := na
                         lbProt := na
                         lbLh := na
@@ -181,7 +239,7 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
                         lbTp := na
                         projStop := na
                         projTgt := na
-                        lvl := l2
+                        lvl := lvlC
                         lhP := h2
                         protP := protC
                         if showLines
@@ -189,7 +247,7 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
                             lnProt := line.new(array.get(pvI, b - 3), sgn * protP, bar_index, sgn * protP, extend = extend.none, color = color.new(color.gray, 30), style = line.style_dotted, width = 1)
                             lnLh   := line.new(array.get(pvI, b - 1), sgn * lhP,   bar_index, sgn * lhP,   extend = extend.none, color = liqCol, style = line.style_dotted, width = 1)
                         if showLabels
-                            label.new(array.get(pvI, b - 1), sgn * h2, sgn > 0 ? "Failed HH" : "Failed LL", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = f_lc(dirCol), textcolor = color.white, size = lblSize)
+                            array.push(evLbl, label.new(array.get(pvI, b - 1), sgn * h2, sgn > 0 ? "Failed HH" : "Failed LL", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = f_lc(dirCol), textcolor = color.white, size = lblSize))
                         if brk >= 0
                             // price already closed through the level: CHoCH is on that earlier bar, not on this one
                             st := 2
@@ -202,26 +260,14 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
                                 if j < brk and not swept and hiS[j] > lhP
                                     swept := true
                                     if showLabels
-                                        label.new(bar_index - j, sgn * hiS[j], "Sweep", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = f_lc(liqCol), textcolor = color.white, size = lblSize)
+                                        array.push(evLbl, label.new(bar_index - j, sgn * hiS[j], "Sweep", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = f_lc(liqCol), textcolor = color.white, size = lblSize))
                             if not na(lnLvl)
                                 line.set_style(lnLvl, line.style_solid)
                             if showLabels
-                                label.new(bar_index - brk, sgn > 0 ? low[brk] : high[brk], sgn > 0 ? "CHoCH ▼" : "CHoCH ▲", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = f_lc(dirCol), textcolor = color.white, size = lblSize)
+                                array.push(evLbl, label.new(bar_index - brk, sgn > 0 ? low[brk] : high[brk], sgn > 0 ? "CHoCH ▼" : "CHoCH ▲", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = f_lc(dirCol), textcolor = color.white, size = lblSize))
 
-    if not na(pl)
-        int c = array.size(pvT)
-        if c > 0 and array.get(pvT, c - 1) == -1
-            if pl < array.get(pvP, c - 1)
-                array.set(pvP, c - 1, pl)
-                array.set(pvI, c - 1, bar_index - swingLen)
-        else
-            array.push(pvT, -1)
-            array.push(pvP, pl)
-            array.push(pvI, bar_index - swingLen)
-            if array.size(pvT) > 12
-                array.shift(pvT)
-                array.shift(pvP)
-                array.shift(pvI)
+    if not na(pl) and not lowFirst
+        f_addPivot(pvT, pvP, pvI, pvB, -1, pl, bar_index - swingLen, bodyLoP)
 
     // 3. State machine
     if st == 4 and not fillNow
@@ -229,13 +275,47 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
         bool hitTp = loS <= tgt
         bool timeUp = holdBars > 0 and bar_index - eBar >= holdBars
         if hitSl or hitTp or timeUp
-            st := 0
             exitNow := hitSl ? 1 : hitTp ? 2 : 3
-            f_end(lnLvl, color.gray, line.style_dotted)
-            f_end(lnProt, color.gray, line.style_dotted)
-            f_end(lnLh, color.gray, line.style_dotted)
-            f_end(lnSl, color.new(sellCol, 0), line.style_dotted)
-            f_end(lnTp, color.new(buyCol, 0), line.style_dotted)
+            rearmNow := rearm and hitSl and clS <= protP and bar_index - cBar <= expireBars
+            if rearmNow
+                // Stopped out, but nothing closed beyond the protected level: the structure is still valid.
+                // Finish this attempt's stop/target drawings and go back to correcting so the next retest can arm again.
+                st := 2
+                maxHi := math.max(maxHi, hiS)
+                projStop := na
+                projTgt := na
+                f_end(lnSl, color.new(sellCol, 0), line.style_dotted)
+                f_end(lnTp, color.new(buyCol, 0), line.style_dotted)
+                if not na(lbSl)
+                    label.set_x(lbSl, bar_index + endExt)
+                    label.set_text(lbSl, label.get_text(lbSl) + "  ✕ stopped, re-armed")
+                if not na(lbTp)
+                    label.set_x(lbTp, bar_index + endExt)
+                if finMode != "Keep"
+                    int rDelAt = bar_index + (finMode == "Remove immediately" ? 0 : finBars)
+                    if not na(lnSl)
+                        array.push(deadLn, lnSl)
+                        array.push(deadLnAt, rDelAt)
+                    if not na(lnTp)
+                        array.push(deadLn, lnTp)
+                        array.push(deadLnAt, rDelAt)
+                    if not na(lbSl)
+                        array.push(deadLb, lbSl)
+                        array.push(deadLbAt, rDelAt)
+                    if not na(lbTp)
+                        array.push(deadLb, lbTp)
+                        array.push(deadLbAt, rDelAt)
+                lnSl := na
+                lnTp := na
+                lbSl := na
+                lbTp := na
+            else
+                st := 0
+                f_end(lnLvl, color.gray, line.style_dotted)
+                f_end(lnProt, color.gray, line.style_dotted)
+                f_end(lnLh, color.gray, line.style_dotted)
+                f_end(lnSl, color.new(sellCol, 0), line.style_dotted)
+                f_end(lnTp, color.new(buyCol, 0), line.style_dotted)
     else if st == 1
         if clS > protP
             st := 0
@@ -252,7 +332,7 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
             if not na(lnLvl)
                 line.set_style(lnLvl, line.style_solid)
             if showLabels
-                label.new(bar_index, sgn > 0 ? low : high, sgn > 0 ? "CHoCH ▼" : "CHoCH ▲", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = f_lc(dirCol), textcolor = color.white, size = lblSize)
+                array.push(evLbl, label.new(bar_index, sgn > 0 ? low : high, sgn > 0 ? "CHoCH ▼" : "CHoCH ▲", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = f_lc(dirCol), textcolor = color.white, size = lblSize))
     else if st == 2
         if clS > protP or bar_index - cBar > expireBars
             st := 0
@@ -267,7 +347,7 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
                 swept := true
                 sweepNow := true
                 if showLabels
-                    label.new(bar_index, sgn * hiS, "Sweep", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = f_lc(liqCol), textcolor = color.white, size = lblSize)
+                    array.push(evLbl, label.new(bar_index, sgn * hiS, "Sweep", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = f_lc(liqCol), textcolor = color.white, size = lblSize))
             maxHi := math.max(maxHi, hiS)
             float stopS = maxHi + stopBuf * atrV
             float rS = stopS - lvl
@@ -291,7 +371,7 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
         if not na(lnLh)
             line.set_x2(lnLh, xEnd)
         if showLabels and showLines and not na(lnLvl)
-            string noSw = swept ? "" : " (no sweep)"
+            string noSw = (swept ? "" : " (no sweep)") + (lvlSrc == "Body edge" ? " (body)" : "")
             string tLvl = (st == 4 ? tagS + " ENTRY" + noSw : (st == 2 and pending) ? tagS + " ENTRY armed" + noSw : st == 2 ? "Level broken" : "Watch level") + "  " + str.tostring(sgn * lvl, format.mintick)
             if na(lbLvl)
                 lbLvl := label.new(xEnd, sgn * lvl, tLvl, style = label.style_label_left, color = f_lc(dirCol), textcolor = color.white, size = lblSize)
@@ -350,12 +430,30 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
             label.set_x(lbTp, bar_index + endExt)
     prevSt := st
 
+    if ((cancelNow == 1 or cancelNow == 2) and invMode != "Keep (grey)") or (exitNow > 0 and not rearmNow and finMode != "Keep")
+        string hideMode = exitNow > 0 ? finMode : invMode
+        int delAt = bar_index + (hideMode == "Remove immediately" ? 0 : (exitNow > 0 ? finBars : invBars))
+        line[] lns = array.from(lnLvl, lnProt, lnLh, lnSl, lnTp)
+        label[] lbs = array.from(lbLvl, lbProt, lbLh, lbSl, lbTp)
+        for l in lns
+            if not na(l)
+                array.push(deadLn, l)
+                array.push(deadLnAt, delAt)
+        for b in lbs
+            if not na(b)
+                array.push(deadLb, b)
+                array.push(deadLbAt, delAt)
+        for b in evLbl
+            array.push(deadLb, b)
+            array.push(deadLbAt, delAt)
+        array.clear(evLbl)
+
     bool armedNow = pending and not prevPend
     prevPend := pending
 
     if alertMsgs
         string side = sgn > 0 ? "SELL" : "BUY"
-        string tag = side + " " + syminfo.ticker + " " + timeframe.period + ": "
+        string tag = side + (lvlSrc == "Body edge" ? " (body)" : "") + " " + syminfo.ticker + " " + timeframe.period + ": "
         string sLvl = str.tostring(sgn * lvl, format.mintick)
         string sLh = str.tostring(sgn * lhP, format.mintick)
         string sProt = str.tostring(sgn * protP, format.mintick)
@@ -378,7 +476,7 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
         if cancelNow == 3
             alert(tag + "EXPIRED. " + str.tostring(expireBars) + " bars passed since the CHoCH. Setup cancelled.", alert.freq_once_per_bar_close)
         if exitNow == 1
-            alert(tag + "STOP hit at " + str.tostring(sgn * pStop, format.mintick) + ".", alert.freq_once_per_bar_close)
+            alert(tag + "STOP hit at " + str.tostring(sgn * pStop, format.mintick) + "." + (rearmNow ? " Structure intact (no close " + sBeyond + sProt + "): setup re-armed, waiting for a new retest of " + sLvl + "." : ""), alert.freq_once_per_bar_close)
         if exitNow == 2
             alert(tag + "TARGET hit at " + str.tostring(sgn * tgt, format.mintick) + ".", alert.freq_once_per_bar_close)
         if exitNow == 3
@@ -388,8 +486,8 @@ f_icc(float hiS, float loS, float clS, float sgn, bool enable, bool allowNew) =>
 
 var int stSPrev = 0
 var int stBPrev = 0
-[stS, pendS, swS, lvlS, lhS, protS, slS, tpS, warnS, chochS, sweepS, fillS, cancS, exitS] = f_icc(high, low, close, 1.0, trackSell, not (blockOpp and stBPrev > 0))
-[stB, pendB, swB, lvlB, lhB, protB, slB, tpB, warnB, chochB, sweepB, fillB, cancB, exitB] = f_icc(-low, -high, -close, -1.0, trackBuy, not (blockOpp and stSPrev > 0))
+[stS, pendS, swS, lvlS, lhS, protS, slS, tpS, warnS, chochS, sweepS, fillS, cancS, exitS] = f_icc(high, low, open, close, 1.0, trackSell and tfOn, not (blockOpp and stBPrev > 0))
+[stB, pendB, swB, lvlB, lhB, protB, slB, tpB, warnB, chochB, sweepB, fillB, cancB, exitB] = f_icc(-low, -high, -open, -close, -1.0, trackBuy and tfOn, not (blockOpp and stSPrev > 0))
 stSPrev := stS
 stBPrev := stB
 
@@ -441,7 +539,10 @@ dPosC = dashPos == "Top Left"     ? position.top_left     :
 
 var table dash = table.new(dPosC, 2, 8, bgcolor = color.new(#0D1117, 5), frame_color = color.new(color.white, 40), frame_width = 2, border_color = color.new(color.white, 75), border_width = 1)
 
-if barstate.islast and showDash
+if barstate.islast and showDash and not tfOn
+    table.cell(dash, 0, 0, "ICC-IL is off on this timeframe (enable it under Timeframes in settings)", text_color = color.new(color.white, 15), text_size = size.small)
+
+if barstate.islast and showDash and tfOn
     color lbl = color.new(color.white, 15)
     table.cell(dash, 0, 0, "ICC INDICATION-LEVEL  |  " + timeframe.period, text_color = #FFD700, text_size = size.normal, bgcolor = color.new(#1E2A3A, 0), text_halign = text.align_center)
     table.merge_cells(dash, 0, 0, 1, 0)

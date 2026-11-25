@@ -1,0 +1,154 @@
+//@version=6
+strategy("ICC Continuation Entry", shorttitle="ICC-CT", overlay=true, initial_capital=10000, pyramiding=0, margin_long=0, margin_short=0, max_labels_count=300)
+
+// Continuation companion to "ICC Indication-Level Entry" (the reversal strategy).
+//   BUY : established uptrend (HH + HL). Price pulls back and makes a higher low (HL), then a candle CLOSE above the
+//         last swing high is the INDICATION (a new HH / BOS in trend direction). That broken high is the INDICATION LEVEL.
+//         The correction brings price back down to the level; entry = buy limit AT the level (break-and-retest).
+//         Stop = just below the protected HL (the low that made the break) or the lowest low since the break.
+//         Target = RR multiple of the stop distance.
+//   SELL is the mirror image (LH, LL trend; close below the last swing low; sell limit at the broken low).
+// Invalidation: a close beyond the protected HL / LH, or the setup expiring.
+
+grpM = "Model"
+swingLen     = input.int(5, "Swing length (bars each side)", minval=1, maxval=20, group=grpM)
+needTrend    = input.bool(true, "Require established trend (prior HH + HL / LL + LH)", group=grpM)
+brkBuf       = input.float(0.0, "Break buffer (x ATR beyond the swing)", minval=0.0, step=0.05, group=grpM)
+maxAge       = input.int(100, "Swing must be younger than (bars)", minval=10, group=grpM)
+entryMode    = input.string("On the break", "Entry", options=["On the break", "On the retest of the line"], group=grpM)
+expireBars   = input.int(60, "Setup expires after (bars since break)", minval=5, group=grpM)
+enableLong   = input.bool(true, "Trade buys", group=grpM)
+enableShort  = input.bool(true, "Trade sells", group=grpM)
+replaceOld   = input.bool(true, "A fresher break replaces an unfilled older setup", group=grpM)
+
+grpR = "Risk"
+stopMode    = input.string("Protected HL/LH", "Stop placement", options=["Protected HL/LH", "Lowest low since break"], group=grpR)
+rr          = input.float(3.0, "Target (R multiple)", minval=1.0, step=0.5, group=grpR)
+stopBuf     = input.float(0.1, "Stop buffer (x ATR)", minval=0.0, step=0.05, group=grpR)
+minRiskAtr  = input.float(0.5, "Min risk (x ATR)", minval=0.0, step=0.1, group=grpR)
+maxRiskAtr  = input.float(8.0, "Max risk (x ATR, 0 = off)", minval=0.0, step=0.5, group=grpR)
+riskPct     = input.float(1.0, "Risk per trade (% of equity)", minval=0.1, step=0.1, group=grpR)
+holdBars    = input.int(80, "Max bars in trade (0 = off)", minval=0, group=grpR)
+
+grpD = "Display"
+showLabels  = input.bool(true, "Label the break (indication)", group=grpD)
+showLevel   = input.bool(true, "Draw the indication level", group=grpD)
+
+atr = ta.atr(14)
+
+// One call per direction, written in "up space": buys use the real series, sells use negated series.
+// Real price = sgn * up-space price (sgn = 1 for buys, -1 for sells).
+f_cont(float hiS, float loS, float clS, float sgn, bool enable, string idEntry, string idExit) =>
+    var int[]   pvT = array.new_int()     // 1 = pivot high, -1 = pivot low (alternating list)
+    var float[] pvP = array.new_float()
+    var int[]   pvI = array.new_int()     // bar index of each pivot
+    var int st = 0                        // 0 = looking for the break, 1 = post-break (waiting for the retest)
+    var float lvl = na                    // indication level = the broken swing high
+    var float protP = na                  // protected HL: a close below it kills the setup
+    var int bBar = na
+    var float minLo = na
+    var int lastUsedL = -1                // bar index of the HL already used, so one swing = one setup
+    var line lnL = na
+
+    ph = ta.pivothigh(hiS, swingLen, swingLen)
+    pl = ta.pivotlow(loS, swingLen, swingLen)
+
+    if not na(ph)
+        int n1 = array.size(pvT)
+        if n1 > 0 and array.get(pvT, n1 - 1) == 1
+            if ph > array.get(pvP, n1 - 1)
+                array.set(pvP, n1 - 1, ph)
+                array.set(pvI, n1 - 1, bar_index - swingLen)
+        else
+            array.push(pvT, 1)
+            array.push(pvP, ph)
+            array.push(pvI, bar_index - swingLen)
+    if not na(pl)
+        int n2 = array.size(pvT)
+        if n2 > 0 and array.get(pvT, n2 - 1) == -1
+            if pl < array.get(pvP, n2 - 1)
+                array.set(pvP, n2 - 1, pl)
+                array.set(pvI, n2 - 1, bar_index - swingLen)
+        else
+            array.push(pvT, -1)
+            array.push(pvP, pl)
+            array.push(pvI, bar_index - swingLen)
+    // keep the list short
+    while array.size(pvT) > 12
+        array.shift(pvT)
+        array.shift(pvP)
+        array.shift(pvI)
+
+    if strategy.position_size != 0
+        st := 0
+        strategy.cancel(idEntry)
+    if strategy.position_size == 0 and (st == 0 or (replaceOld and st == 1))
+        // find the last pivot low (the HL) and the structure around it: H0, L0, H1, L1 (+ optional later high H2)
+        int n = array.size(pvT)
+        int iL = -1
+        if n >= 1
+            iL := array.get(pvT, n - 1) == -1 ? n - 1 : (n >= 2 ? n - 2 : -1)
+        if enable and iL >= 3 and not na(atr)
+            float l1 = array.get(pvP, iL)
+            int   l1i = array.get(pvI, iL)
+            float h1 = array.get(pvP, iL - 1)
+            int   h1i = array.get(pvI, iL - 1)
+            float l0 = array.get(pvP, iL - 2)
+            float h0 = array.get(pvP, iL - 3)
+            float ref = h1
+            int   refI = h1i
+            if iL + 1 < n and array.get(pvP, iL + 1) > ref
+                ref := array.get(pvP, iL + 1)
+                refI := array.get(pvI, iL + 1)
+            bool trendOk = not needTrend or (h1 > h0 and l1 > l0)
+            bool hlOk = l1 > l0
+            bool fresh = bar_index - refI <= maxAge and l1i > lastUsedL
+            if trendOk and hlOk and fresh and bar_index > l1i + swingLen and clS > ref + brkBuf * atr and clS > l1
+                if st == 1 and not na(lnL)
+                    line.set_x2(lnL, bar_index)
+                st := 1
+                lvl := ref
+                protP := l1
+                bBar := bar_index
+                minLo := loS
+                lastUsedL := l1i
+                if showLabels
+                    label.new(bar_index, sgn > 0 ? low : high, sgn > 0 ? "BOS ^" : "BOS v", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = sgn > 0 ? color.new(color.teal, 20) : color.new(color.red, 20), textcolor = color.white, size = size.tiny)
+                if showLevel
+                    lnL := line.new(refI, sgn * ref, bar_index, sgn * ref, color = sgn > 0 ? color.new(color.teal, 30) : color.new(color.red, 30), style = line.style_dashed)
+                if entryMode == "On the break"
+                    float sB = l1 - stopBuf * atr
+                    float rB = clS - sB
+                    if rB >= minRiskAtr * atr and (maxRiskAtr == 0 or rB <= maxRiskAtr * atr)
+                        float qB = strategy.equity * riskPct / 100 / rB
+                        strategy.entry(idEntry, sgn > 0 ? strategy.long : strategy.short, qty = qB)
+                        strategy.exit(idExit, idEntry, stop = sgn * sB, limit = sgn * (clS + rr * rB))
+                    st := 0
+    if st == 1 and bBar != bar_index
+        if clS < protP or bar_index - bBar > expireBars
+            st := 0
+            strategy.cancel(idEntry)
+            if not na(lnL)
+                line.set_x2(lnL, bar_index)
+        else
+            minLo := math.min(minLo, loS)
+            if not na(lnL)
+                line.set_x2(lnL, bar_index)
+            float baseS = stopMode == "Protected HL/LH" ? protP : math.min(minLo, protP)
+            float stopS = stopMode == "Protected HL/LH" ? baseS - stopBuf * atr : math.min(minLo, lvl - minRiskAtr * atr) - stopBuf * atr
+            float rS = lvl - stopS
+            bool riskOk = rS >= minRiskAtr * atr and (maxRiskAtr == 0 or rS <= maxRiskAtr * atr)
+            if clS > lvl and riskOk and bar_index > bBar
+                float qty = strategy.equity * riskPct / 100 / rS
+                strategy.entry(idEntry, sgn > 0 ? strategy.long : strategy.short, qty = qty, limit = sgn * lvl)
+                strategy.exit(idExit, idEntry, stop = sgn * stopS, limit = sgn * (lvl + rr * rS))
+            else
+                strategy.cancel(idEntry)
+    true
+
+f_cont(high, low, close, 1.0, enableLong, "Cont Long", "Cont Long exit")
+f_cont(-low, -high, -close, -1.0, enableShort, "Cont Short", "Cont Short exit")
+
+if holdBars > 0 and strategy.position_size != 0
+    if bar_index - strategy.opentrades.entry_bar_index(0) >= holdBars
+        strategy.close_all(comment = "time exit")
