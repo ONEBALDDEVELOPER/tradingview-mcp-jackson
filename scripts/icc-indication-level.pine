@@ -66,6 +66,8 @@ finMode  = input.string("Hide after N bars", "Setups that hit stop / target", op
 finBars  = input.int(10, "Hide stop / target setups after (bars)", minval=1, group=grpD, tooltip="Only used when 'Setups that hit stop / target' is 'Hide after N bars'.")
 blockOpp = input.bool(true, "One direction at a time", group=grpM, tooltip="While a sell setup is alive (from the failed HH until it is invalidated, expires, or is closed), no buy setup is started, and the other way round. Stops opposite setups from cluttering the same area.")
 rearm    = input.bool(true, "Re-arm after a stop (structure intact)", group=grpM, tooltip="When a trade is stopped out but price has NOT closed beyond the protected level and the setup has not expired, the structure is still valid, so the setup goes back to 'correcting' and can arm again on the next retest of the indication level (the stopped attempt's stop/target lines are finished and the old stop is replaced by a new one above the new correction high). Off: a stop ends the setup, as before. Target hits and the max-bars time exit always end the setup. Added at the END of the inputs so existing saved settings keep their place.")
+stopIncEntry = input.bool(true, "Stop includes the entry candle's high", group=grpR, tooltip="The candle that fills the entry can itself push the correction higher. On: the stop is placed beyond the highest point of the correction INCLUDING that candle (set once it has closed), so a spike on the entry candle does not stop the trade out on the next bar. Off: the stop is fixed from the candles before the entry.")
+fillOnClose = input.bool(true, "Entry needs a candle CLOSE through the level", group=grpM, tooltip="On: the sell (buy) only fills when a candle CLOSES below (above) the indication level. A wick through the level that closes back on the other side is a sweep, not an entry, and the setup stays armed. Off: any touch of the level fills (the old behaviour).")
 
 atrV = ta.atr(14)
 
@@ -170,10 +172,17 @@ f_icc(float hiS, float loS, float opS, float clS, float sgn, bool enable, bool a
     pl = ta.pivotlow(pivLoSrc, swingLen, swingLen)
 
     // 1. A sell stop placed at the previous bar's close fills when price trades down to the level
-    if enable and st == 2 and pending and loS <= lvl
+    if enable and st == 2 and pending and loS <= lvl and (not fillOnClose or clS <= lvl)
         st := 4
         fillNow := true
         eBar := bar_index
+        // the fill candle can itself extend the correction high: put the stop beyond it (known once that candle has closed)
+        if stopIncEntry and hiS > maxHi
+            maxHi := hiS
+            float sNew = maxHi + stopBuf * atrV
+            if sNew > pStop
+                pStop := sNew
+                tgt := lvl - rr * (pStop - lvl)
         if not na(lnSl)
             line.set_x1(lnSl, bar_index)
             line.set_style(lnSl, line.style_dashed)

@@ -1,0 +1,121 @@
+//@version=5
+strategy("VWAP/MVWAP/EMA Bot", overlay=true, initial_capital=10000,
+     default_qty_type=strategy.fixed, default_qty_value=1, pyramiding=0,
+     commission_type=strategy.commission.percent, commission_value=0.02, slippage=2,
+     calc_on_every_tick=false)
+
+// Port of "VWAP/MVWAP/EMA CROSSOVER" (@DerrickLaFlame)
+// Adds: SL/TP via settings, consolidation filter, risk sizing, webhook alert messages
+
+// ───────── Strategy inputs ─────────
+gS = "Strategy"
+vwapLen   = input.int(21, "VWAP Length (EMA of VWAP)",  minval=1, group=gS)
+mvwapLen  = input.int(21, "MVWAP Length (EMA of VWAP)", minval=1, group=gS)
+ema1Len   = input.int(11, "EMA 1 Length", minval=1, group=gS)
+ema2Len   = input.int(22, "EMA 2 Length", minval=1, group=gS)
+dirMode   = input.string("Both", "Direction", options=["Both", "Long only", "Short only"], group=gS)
+closeOpp  = input.bool(true, "Close position on opposite signal", group=gS)
+
+gR = "Optional RSI filter (long entries)"
+useRsi    = input.bool(false, "Require RSI between min and limit", group=gR)
+rsiLen    = input.int(14, "RSI period", group=gR)
+rsiMin    = input.float(51, "RSI minimum (wait for dip)", group=gR)
+rsiLimit  = input.float(65, "RSI limit (risky above)", group=gR)
+
+// ───────── SL / TP ─────────
+gE = "Stop Loss / Take Profit"
+slMode    = input.string("ATR multiple", "Stop loss mode", options=["Fixed pips", "ATR multiple"], group=gE)
+slPips    = input.float(30.0, "SL: fixed distance (pips)", group=gE)
+slAtr     = input.float(1.0, "SL: ATR multiplier", group=gE)
+tpMode    = input.string("Risk:Reward", "Take profit mode", options=["Fixed pips", "Risk:Reward", "ATR multiple", "None"], group=gE)
+tpPips    = input.float(60.0, "TP: fixed distance (pips)", group=gE)
+tpRR      = input.float(5.0, "TP: reward:risk ratio", group=gE)
+tpAtr     = input.float(3.0, "TP: ATR multiplier", group=gE)
+atrLen    = input.int(14, "ATR period", group=gE)
+
+// ───────── Position size ─────────
+gP = "Position size"
+lotMode   = input.string("Risk % of equity", "Size mode", options=["Fixed", "Risk % of equity"], group=gP)
+fixedQty  = input.float(1.0, "Fixed quantity (units/contracts)", minval=0.0, group=gP)
+riskPct   = input.float(1.0, "Risk % of equity per trade", minval=0.0, group=gP)
+
+// ───────── Consolidation filter ─────────
+gC = "Consolidation filter (no entries while ranging)"
+useCons   = input.bool(true, "Enable consolidation filter", group=gC)
+useAdx    = input.bool(true, "Test 1: ADX below threshold", group=gC)
+adxLen    = input.int(14, "ADX period", group=gC)
+adxMin    = input.float(20.0, "ADX < this = consolidating", group=gC)
+useRange  = input.bool(true, "Test 2: tight N-bar range", group=gC)
+rangeBars = input.int(20, "Bars in range window", minval=2, group=gC)
+rangeMult = input.float(3.0, "Range < this × ATR = consolidating", group=gC)
+useSpread = input.bool(false, "Test 3: EMA1/EMA2 squeezed", group=gC)
+spreadMult= input.float(0.3, "|EMA1−EMA2| < this × ATR = consolidating", group=gC)
+
+// ───────── Filters ─────────
+gF = "Filters"
+useTime   = input.bool(false, "Restrict trading hours", group=gF)
+sess      = input.session("1300-2000", "Trading session (chart timezone)", group=gF)
+shadeCons = input.bool(true, "Shade consolidation on chart", group=gF)
+
+// ───────── Calculations ─────────
+vwapRaw = ta.vwap(hlc3)               // session-anchored VWAP (same as Pine v3 `vwap`)
+cv      = ta.ema(vwapRaw, vwapLen)
+mv      = ta.ema(vwapRaw, mvwapLen)   // MVWAP
+ema1    = ta.ema(close, ema1Len)
+ema2    = ta.ema(close, ema2Len)
+
+bull     = ema1 >= mv and ema2 >= mv and cv >= mv
+longSig  = bull and not bull[1]       // Longtrigger
+shortSig = not bull and bull[1]       // Shorttrigger
+
+atr = ta.atr(atrLen)
+[_, _, adx] = ta.dmi(adxLen, adxLen)
+rsi = ta.rsi(close, rsiLen)
+rng = ta.highest(high, rangeBars) - ta.lowest(low, rangeBars)
+
+consol = useCons and ((useAdx and adx < adxMin) or (useRange and rng < rangeMult * atr) or (useSpread and math.abs(ema1 - ema2) < spreadMult * atr))
+inTime = not useTime or not na(time(timeframe.period, sess))
+
+pip = syminfo.type == "forex" ? syminfo.mintick * 10 : syminfo.mintick
+slDist = slMode == "Fixed pips" ? slPips * pip : slAtr * atr
+tpDist = tpMode == "Fixed pips" ? tpPips * pip : tpMode == "Risk:Reward" ? slDist * tpRR : tpMode == "ATR multiple" ? tpAtr * atr : na
+
+qty = lotMode == "Fixed" ? fixedQty : (slDist > 0 ? math.max(strategy.equity * riskPct / 100 / (slDist * syminfo.pointvalue), 0) : fixedQty)
+
+// ───────── Orders ─────────
+var float tSl = na
+var float tTp = na
+
+// Opposite-signal exits are always allowed, even during consolidation
+if closeOpp and longSig and strategy.position_size < 0
+    strategy.close("Short", comment="Opp signal", alert_message='{"action":"close","side":"short","symbol":"{{ticker}}"}')
+if closeOpp and shortSig and strategy.position_size > 0
+    strategy.close("Long", comment="Opp signal", alert_message='{"action":"close","side":"long","symbol":"{{ticker}}"}')
+
+canEnter = inTime and not consol and qty > 0
+
+if longSig and canEnter and dirMode != "Short only" and (not useRsi or (rsi < rsiLimit and rsi > rsiMin))
+    tSl := slDist
+    tTp := tpDist
+    strategy.entry("Long", strategy.long, qty=qty, alert_message='{"action":"buy","symbol":"{{ticker}}","qty":' + str.tostring(qty) + ',"sl_dist":' + str.tostring(slDist) + ',"tp_dist":' + str.tostring(nz(tpDist)) + '}')
+
+if shortSig and canEnter and dirMode != "Long only"
+    tSl := slDist
+    tTp := tpDist
+    strategy.entry("Short", strategy.short, qty=qty, alert_message='{"action":"sell","symbol":"{{ticker}}","qty":' + str.tostring(qty) + ',"sl_dist":' + str.tostring(slDist) + ',"tp_dist":' + str.tostring(nz(tpDist)) + '}')
+
+// SL/TP anchored to the actual fill price
+if strategy.position_size > 0 and not na(tSl)
+    strategy.exit("Long SL/TP", "Long", stop=strategy.position_avg_price - tSl, limit=na(tTp) ? na : strategy.position_avg_price + tTp, alert_message='{"action":"close","side":"long","symbol":"{{ticker}}"}')
+if strategy.position_size < 0 and not na(tSl)
+    strategy.exit("Short SL/TP", "Short", stop=strategy.position_avg_price + tSl, limit=na(tTp) ? na : strategy.position_avg_price - tTp, alert_message='{"action":"close","side":"short","symbol":"{{ticker}}"}')
+
+// ───────── Plots ─────────
+plot(mv, "MVWAP", color=color.fuchsia)
+plot(cv, "VWAP", color=color.yellow, linewidth=2)
+plot(ema1, "EMA1", color=color.yellow)
+plot(ema2, "EMA2", color=color.orange)
+plotshape(longSig, "Long signal", location=location.belowbar, color=color.green, style=shape.triangleup, text="Long")
+plotshape(shortSig, "Short signal", location=location.abovebar, color=color.red, style=shape.triangledown, text="Short")
+bgcolor(shadeCons and consol ? color.new(color.gray, 85) : na, title="Consolidation")
+barcolor(bull ? color.green : color.red)

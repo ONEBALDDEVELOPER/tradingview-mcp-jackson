@@ -1,0 +1,416 @@
+//@version=6
+indicator("ICC Sweep Tracker", shorttitle="ICC-SW", overlay=true, max_lines_count=200, max_labels_count=300, max_bars_back=500)
+
+// Rewrite of the ICC Indication-Level Tracker with sweep awareness.
+//   SELL: failed HH -> indication level (the HL) -> close below it = CHoCH -> correction back up -> entry at the level.
+//   BUY: exact mirror.
+// Changes vs the old tracker:
+//   1. Liquidity pools = every wick swing high (sell) / low (buy) formed AFTER the indication-level candle, not only the LH.
+//      A sweep = a wick through a pool that CLOSES back inside it. It counts before or after the CHoCH.
+//   2. Arming tolerance: a close within armTol * ATR below the level (sell) still arms the entry.
+//   3. Works on any timeframe; finished setups stay until they leave the lookback window.
+
+grpM = "Model"
+swingLen  = input.int(3, "Swing length", minval=1, maxval=30, group=grpM)
+eqTol     = input.float(0.25, "Equal-high/low tolerance (x ATR)", minval=0.0, step=0.05, group=grpM)
+lvlSrc    = input.string("Body edge", "Indication level source", options=["Wick", "Body edge"], group=grpM)
+pivSrc    = input.string("Body", "Swing source for HH/HL/LH/LL", options=["Wick", "Body"], group=grpM)
+chochBuf  = input.float(0.25, "CHoCH clean-close buffer (x ATR)", minval=0.0, step=0.05, group=grpM)
+armTol    = input.float(0.25, "Arm tolerance: close may sit this far on the wrong side of the level (x ATR)", minval=0.0, step=0.05, group=grpM)
+sweepMode = input.string("Optional (flag it)", "Liquidity sweep before entry", options=["Optional (flag it)", "Required"], group=grpM)
+expireBars = input.int(80, "Setup expires after (bars since CHoCH)", minval=5, group=grpM)
+trackSell = input.bool(true, "Track sells", group=grpM)
+trackBuy  = input.bool(true, "Track buys", group=grpM)
+blockOpp  = input.bool(true, "One direction at a time", group=grpM)
+
+grpR = "Stop / Target"
+stopBuf  = input.float(0.1, "Stop buffer (x ATR)", minval=0.0, step=0.05, group=grpR)
+rr       = input.float(3.0, "Target (R multiple)", minval=1.0, step=0.5, group=grpR)
+holdBars = input.int(80, "Max bars in trade (0 = off)", minval=0, group=grpR)
+
+grpD = "Display"
+lookbackBars = input.int(600, "Lookback (bars)", minval=0, maxval=5000, group=grpD)
+showLabels = input.bool(true, "Show stage labels", group=grpD)
+showDash   = input.bool(true, "Show dashboard", group=grpD)
+dashPos    = input.string("Top Right", "Dashboard position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpD)
+sellCol    = input.color(color.new(#ef5350, 0), "Sell colour", group=grpD)
+buyCol     = input.color(color.new(#26a69a, 0), "Buy colour", group=grpD)
+liqCol     = input.color(color.new(#FF9800, 0), "Liquidity colour", group=grpD)
+
+requireSweep = sweepMode == "Required"
+atrV = ta.atr(14)
+lblSize = size.small
+
+f_end(line l, color c, string sty) =>
+    if not na(l)
+        line.set_extend(l, extend.none)
+        line.set_x2(l, bar_index)
+        line.set_color(l, c)
+        line.set_style(l, sty)
+
+// One call per direction. Series are passed in "sell space" (negated for buys). Real price = sgn * sell-space price.
+f_icc(float hiS, float loS, float opS, float clS, float sgn, bool enable, bool allowNew) =>
+    var int[]   pvT = array.new_int()
+    var float[] pvP = array.new_float()
+    var int[]   pvI = array.new_int()
+    var float[] pvB = array.new_float()
+    var float[] poolP = array.new_float()
+    var int[]   poolI = array.new_int()
+    var int   st = 0
+    var float lvl = na
+    var float lhP = na
+    var float protP = na
+    var int   lvlI = na
+    var int   cBar = na
+    var int   eBar = na
+    var bool  swept = false
+    var float maxHi = na
+    var bool  pending = false
+    var bool  prevPend = false
+    var float pStop = na
+    var float tgt = na
+    var float projStop = na
+    var float projTgt = na
+    var line  lnLvl = na
+    var line  lnProt = na
+    var line  lnLh = na
+    var line  lnSl = na
+    var line  lnTp = na
+    var label lbLvl = na
+    var label lbProt = na
+    var label lbLh = na
+    var label lbSl = na
+    var label lbTp = na
+    var int   prevSt = 0
+    color dirCol = sgn > 0 ? sellCol : buyCol
+    bool warnNow = false
+    bool chochNow = false
+    bool sweepNow = false
+    bool fillNow = false
+    int cancelNow = 0
+    int exitNow = 0
+
+    float pivHiSrc = pivSrc == "Body" ? math.max(opS, clS) : hiS
+    float pivLoSrc = pivSrc == "Body" ? math.min(opS, clS) : loS
+    ph = ta.pivothigh(pivHiSrc, swingLen, swingLen)
+    pl = ta.pivotlow(pivLoSrc, swingLen, swingLen)
+    phW = ta.pivothigh(hiS, swingLen, swingLen)
+
+    // Liquidity pools: every confirmed wick swing high (sell space)
+    if not na(phW)
+        array.push(poolP, phW)
+        array.push(poolI, bar_index - swingLen)
+        if array.size(poolP) > 30
+            array.shift(poolP)
+            array.shift(poolI)
+
+    // 1. Sell stop placed on the previous bar fills when price trades down to the level
+    if enable and st == 2 and pending and loS <= lvl
+        st := 4
+        fillNow := true
+        eBar := bar_index
+        if not na(lnSl)
+            line.set_x1(lnSl, bar_index)
+            line.set_style(lnSl, line.style_dashed)
+        if not na(lnTp)
+            line.set_x1(lnTp, bar_index)
+            line.set_style(lnTp, line.style_dashed)
+    pending := false
+
+    // 2. Pivots (alternating list) and the failed HH pattern
+    if not na(ph)
+        int a = array.size(pvT)
+        if a > 0 and array.get(pvT, a - 1) == 1
+            if ph > array.get(pvP, a - 1)
+                array.set(pvP, a - 1, ph)
+                array.set(pvI, a - 1, bar_index - swingLen)
+                array.set(pvB, a - 1, math.max(opS[swingLen], clS[swingLen]))
+        else
+            array.push(pvT, 1)
+            array.push(pvP, ph)
+            array.push(pvI, bar_index - swingLen)
+            array.push(pvB, math.max(opS[swingLen], clS[swingLen]))
+            if array.size(pvT) > 12
+                array.shift(pvT)
+                array.shift(pvP)
+                array.shift(pvI)
+                array.shift(pvB)
+        int b = array.size(pvT)
+        if enable and allowNew and st < 2 and b >= 5
+            if array.get(pvT, b - 5) == 1 and array.get(pvT, b - 4) == -1 and array.get(pvT, b - 3) == 1 and array.get(pvT, b - 2) == -1 and array.get(pvT, b - 1) == 1
+                h0 = array.get(pvP, b - 5)
+                l1 = array.get(pvP, b - 4)
+                h1 = array.get(pvP, b - 3)
+                l2 = array.get(pvP, b - 2)
+                h2 = array.get(pvP, b - 1)
+                bool l1Held = true
+                int kFrom = bar_index - array.get(pvI, b - 4)
+                int kTo = bar_index - array.get(pvI, b - 2)
+                for k = kTo to kFrom
+                    if clS[k] < l1
+                        l1Held := false
+                bool hlOk = l2 > l1 - eqTol * atrV or l1Held
+                if h1 > h0 - eqTol * atrV and hlOk and h2 < h1 + eqTol * atrV
+                    float protC = math.max(h1, h2)
+                    float lvlC = lvlSrc == "Body edge" ? array.get(pvB, b - 2) : l2
+                    int brk = -1
+                    bool dead = false
+                    for k = swingLen - 1 to 0
+                        if clS[k] > protC
+                            dead := true
+                        else if brk < 0 and not dead and clS[k] < lvlC - chochBuf * atrV
+                            brk := k
+                    if not dead
+                        if st == 1
+                            f_end(lnLvl, color.gray, line.style_dotted)
+                            f_end(lnProt, color.gray, line.style_dotted)
+                            f_end(lnLh, color.gray, line.style_dotted)
+                        st := 1
+                        warnNow := true
+                        swept := false
+                        lbLvl := na
+                        lbProt := na
+                        lbLh := na
+                        lnSl := na
+                        lnTp := na
+                        lbSl := na
+                        lbTp := na
+                        projStop := na
+                        projTgt := na
+                        lvl := lvlC
+                        lvlI := array.get(pvI, b - 2)
+                        lhP := h2
+                        protP := protC
+                        lnLvl  := line.new(array.get(pvI, b - 2), sgn * lvl,   bar_index, sgn * lvl,   extend = extend.none, color = dirCol, style = line.style_dashed, width = 1)
+                        lnProt := line.new(array.get(pvI, b - 3), sgn * protP, bar_index, sgn * protP, extend = extend.none, color = color.new(color.gray, 30), style = line.style_dotted, width = 1)
+                        lnLh   := line.new(array.get(pvI, b - 1), sgn * lhP,   bar_index, sgn * lhP,   extend = extend.none, color = liqCol, style = line.style_dotted, width = 1)
+                        if showLabels
+                            label.new(array.get(pvI, b - 1), sgn * h2, sgn > 0 ? "Failed HH" : "Failed LL", style = sgn > 0 ? label.style_label_down : label.style_label_up, color = dirCol, textcolor = color.white, size = lblSize)
+                        if brk >= 0
+                            st := 2
+                            chochNow := true
+                            cBar := bar_index - brk
+                            maxHi := hiS[brk]
+                            for j = brk to 0
+                                maxHi := math.max(maxHi, hiS[j])
+                                if j < brk and hiS[j] > lhP
+                                    swept := true
+                            if not na(lnLvl)
+                                line.set_style(lnLvl, line.style_solid)
+                            if showLabels
+                                label.new(bar_index - brk, sgn > 0 ? low[brk] : high[brk], sgn > 0 ? "CHoCH ▼" : "CHoCH ▲", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = dirCol, textcolor = color.white, size = lblSize)
+
+    if not na(pl)
+        int c = array.size(pvT)
+        if c > 0 and array.get(pvT, c - 1) == -1
+            if pl < array.get(pvP, c - 1)
+                array.set(pvP, c - 1, pl)
+                array.set(pvI, c - 1, bar_index - swingLen)
+                array.set(pvB, c - 1, math.min(opS[swingLen], clS[swingLen]))
+        else
+            array.push(pvT, -1)
+            array.push(pvP, pl)
+            array.push(pvI, bar_index - swingLen)
+            array.push(pvB, math.min(opS[swingLen], clS[swingLen]))
+            if array.size(pvT) > 12
+                array.shift(pvT)
+                array.shift(pvP)
+                array.shift(pvI)
+                array.shift(pvB)
+
+    // 3a. Sweep detection (before or after the CHoCH): a wick through a pool formed after the HL candle that closes back inside it
+    if (st == 1 or st == 2) and not swept and not na(lvlI) and array.size(poolP) > 0
+        float hit = na
+        for i = 0 to array.size(poolP) - 1
+            float pp = array.get(poolP, i)
+            if na(hit) and array.get(poolI, i) > lvlI and pp > lvl and pp <= protP and hiS > pp and clS < pp
+                hit := pp
+        if na(hit) and st == 2 and hiS > lhP
+            hit := lhP
+        if not na(hit)
+            swept := true
+            sweepNow := true
+            if showLabels
+                label.new(bar_index, sgn * hiS, "Swept " + str.tostring(sgn * hit, format.mintick), style = sgn > 0 ? label.style_label_down : label.style_label_up, color = liqCol, textcolor = color.white, size = lblSize)
+
+    // 3b. State machine
+    if st == 4 and not fillNow
+        bool hitSl = hiS >= pStop
+        bool hitTp = loS <= tgt
+        bool timeUp = holdBars > 0 and bar_index - eBar >= holdBars
+        if hitSl or hitTp or timeUp
+            st := 0
+            exitNow := hitSl ? 1 : hitTp ? 2 : 3
+            f_end(lnLvl, color.gray, line.style_dotted)
+            f_end(lnProt, color.gray, line.style_dotted)
+            f_end(lnLh, color.gray, line.style_dotted)
+            f_end(lnSl, color.new(sellCol, 0), line.style_dotted)
+            f_end(lnTp, color.new(buyCol, 0), line.style_dotted)
+    else if st == 1
+        if clS > protP
+            st := 0
+            cancelNow := 1
+            f_end(lnLvl, color.gray, line.style_dotted)
+            f_end(lnProt, color.gray, line.style_dotted)
+            f_end(lnLh, color.gray, line.style_dotted)
+        else if clS < lvl - chochBuf * atrV
+            st := 2
+            chochNow := true
+            cBar := bar_index
+            maxHi := hiS
+            if not na(lnLvl)
+                line.set_style(lnLvl, line.style_solid)
+            if showLabels
+                label.new(bar_index, sgn > 0 ? low : high, sgn > 0 ? "CHoCH ▼" : "CHoCH ▲", style = sgn > 0 ? label.style_label_up : label.style_label_down, color = dirCol, textcolor = color.white, size = lblSize)
+    else if st == 2
+        if clS > protP or bar_index - cBar > expireBars
+            st := 0
+            cancelNow := clS > protP ? 2 : 3
+            f_end(lnLvl, color.gray, line.style_dotted)
+            f_end(lnProt, color.gray, line.style_dotted)
+            f_end(lnLh, color.gray, line.style_dotted)
+            f_end(lnSl, color.new(sellCol, 0), line.style_dotted)
+            f_end(lnTp, color.new(buyCol, 0), line.style_dotted)
+        else
+            maxHi := math.max(maxHi, hiS)
+            float stopS = maxHi + stopBuf * atrV
+            float rS = stopS - lvl
+            float tgtS = lvl - rr * rS
+            projStop := stopS
+            projTgt := tgtS
+            if (not requireSweep or swept) and clS > lvl - armTol * atrV and rS > 0
+                pending := true
+                pStop := stopS
+                tgt := tgtS
+
+    // Lines grow with price while the setup is alive; labels are locked to the line ends
+    int xEnd = bar_index
+    string tagS = sgn > 0 ? "SELL" : "BUY"
+    if st == 1 or st == 2 or st == 4
+        if not na(lnLvl)
+            line.set_x2(lnLvl, xEnd)
+        if not na(lnProt)
+            line.set_x2(lnProt, xEnd)
+        if not na(lnLh)
+            line.set_x2(lnLh, xEnd)
+        if showLabels and not na(lnLvl)
+            string noSw = swept ? "" : " (no sweep)"
+            string tLvl = (st == 4 ? tagS + " ENTRY" + noSw : (st == 2 and pending) ? tagS + " ENTRY armed" + noSw : st == 2 ? "Level broken" : "Watch level") + "  " + str.tostring(sgn * lvl, format.mintick)
+            if na(lbLvl)
+                lbLvl := label.new(xEnd, sgn * lvl, tLvl, style = label.style_label_left, color = dirCol, textcolor = color.white, size = lblSize)
+            else
+                label.set_xy(lbLvl, xEnd, sgn * lvl)
+                label.set_text(lbLvl, tLvl)
+            string tProt = "Invalid " + (sgn > 0 ? "above " : "below ") + str.tostring(sgn * protP, format.mintick)
+            if na(lbProt)
+                lbProt := label.new(xEnd, sgn * protP, tProt, style = label.style_label_left, color = color.gray, textcolor = color.white, size = lblSize)
+            else
+                label.set_xy(lbProt, xEnd, sgn * protP)
+                label.set_text(lbProt, tProt)
+            string tLh = "Liquidity  " + str.tostring(sgn * lhP, format.mintick)
+            if na(lbLh)
+                lbLh := label.new(xEnd, sgn * lhP, tLh, style = label.style_label_left, color = liqCol, textcolor = color.white, size = lblSize)
+            else
+                label.set_xy(lbLh, xEnd, sgn * lhP)
+                label.set_text(lbLh, tLh)
+    if (st == 2 or st == 4) and not na(projStop)
+        float slY = st == 4 ? pStop : projStop
+        float tpY = st == 4 ? tgt : projTgt
+        if na(lnSl)
+            lnSl := line.new(bar_index, sgn * slY, xEnd, sgn * slY, extend = extend.none, color = color.new(sellCol, 0), style = line.style_dotted, width = 1)
+            lnTp := line.new(bar_index, sgn * tpY, xEnd, sgn * tpY, extend = extend.none, color = color.new(buyCol, 0), style = line.style_dotted, width = 1)
+        else
+            line.set_xy2(lnSl, xEnd, sgn * slY)
+            line.set_y1(lnSl, sgn * slY)
+            line.set_xy2(lnTp, xEnd, sgn * tpY)
+            line.set_y1(lnTp, sgn * tpY)
+        if showLabels
+            string tSl = (st == 4 ? "Stop  " : "Stop (planned)  ") + str.tostring(sgn * slY, format.mintick)
+            string tTp = (st == 4 ? "Target (" : "Target (planned, ") + str.tostring(rr, "#.#") + "R)  " + str.tostring(sgn * tpY, format.mintick)
+            if na(lbSl)
+                lbSl := label.new(xEnd, sgn * slY, tSl, style = label.style_label_left, color = sellCol, textcolor = color.white, size = lblSize)
+                lbTp := label.new(xEnd, sgn * tpY, tTp, style = label.style_label_left, color = buyCol, textcolor = color.white, size = lblSize)
+            else
+                label.set_xy(lbSl, xEnd, sgn * slY)
+                label.set_text(lbSl, tSl)
+                label.set_xy(lbTp, xEnd, sgn * tpY)
+                label.set_text(lbTp, tTp)
+    if prevSt > 0 and st == 0
+        if not na(lbLvl)
+            string why = (cancelNow == 1 or cancelNow == 2) ? "  ✕ invalidated" : cancelNow == 3 ? "  ✕ expired" : exitNow == 1 ? "  ✕ stopped" : exitNow == 2 ? "  ✓ target" : exitNow == 3 ? "  time exit" : ""
+            label.set_text(lbLvl, label.get_text(lbLvl) + why)
+    prevSt := st
+
+    bool armedNow = pending and not prevPend
+    prevPend := pending
+
+    [st, pending, swept, sgn * lvl, sgn * lhP, sgn * protP, sgn * (st == 4 ? pStop : projStop), sgn * (st == 4 ? tgt : projTgt), warnNow, chochNow, sweepNow, fillNow, armedNow, cancelNow, exitNow]
+
+var int stSPrev = 0
+var int stBPrev = 0
+[stS, pendS, swS, lvlS, lhS, protS, slS, tpS, warnS, chochS, sweepS, fillS, armedS, cancS, exitS] = f_icc(high, low, open, close, 1.0, trackSell, not (blockOpp and stBPrev > 0))
+[stB, pendB, swB, lvlB, lhB, protB, slB, tpB, warnB, chochB, sweepB, fillB, armedB, cancB, exitB] = f_icc(-low, -high, -open, -close, -1.0, trackBuy, not (blockOpp and stSPrev > 0))
+stSPrev := stS
+stBPrev := stB
+
+// Keep the chart clean: remove drawings that ended before the lookback window
+if barstate.islast and lookbackBars > 0
+    for ln in line.all
+        if line.get_x2(ln) < bar_index - lookbackBars
+            line.delete(ln)
+    for lb in label.all
+        if label.get_x(lb) < bar_index - lookbackBars
+            label.delete(lb)
+
+// Dashboard
+f_rank(int st, bool pend) => st == 4 ? 4 : (st == 2 and pend) ? 3 : st
+rankS = f_rank(stS, pendS)
+rankB = f_rank(stB, pendB)
+useBuy = rankB > rankS
+
+f_phase(int st, bool pend, bool sw, bool isSell) =>
+    string d = isSell ? "SELL: " : "BUY: "
+    st == 4 ? d + "IN TRADE" :
+     (st == 2 and pend) ? d + "ARMED" + (sw ? " (swept)" : " (no sweep)") :
+     st == 2 ? d + "CHoCH done, correcting" + (sw ? " (swept)" : " (no sweep yet)") :
+     st == 1 ? d + (isSell ? "Failed HH, watching" : "Failed LL, watching") + (sw ? " (swept)" : "") : "No setup"
+
+phText = f_phase(useBuy ? stB : stS, useBuy ? pendB : pendS, useBuy ? swB : swS, not useBuy)
+phRank = useBuy ? rankB : rankS
+phBg = phRank == 4 ? color.new(useBuy ? buyCol : sellCol, 30) : phRank == 3 ? color.new(#FFD700, 35) : phRank == 2 ? color.new(#2962FF, 45) : phRank == 1 ? color.new(#FF9800, 40) : color.new(color.gray, 55)
+nz2(float v) => na(v) ? "—" : str.tostring(v, format.mintick)
+dLvl  = useBuy ? lvlB  : lvlS
+dLh   = useBuy ? lhB   : lhS
+dProt = useBuy ? protB : protS
+dSl   = useBuy ? slB   : slS
+dTp   = useBuy ? tpB   : tpS
+active = phRank > 0
+showRisk = phRank >= 2
+
+dPosC = dashPos == "Top Left" ? position.top_left : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+var table dash = table.new(dPosC, 2, 7, bgcolor = color.new(#0D1117, 5), frame_color = color.new(color.white, 40), frame_width = 2, border_color = color.new(color.white, 75), border_width = 1)
+
+if barstate.islast and showDash
+    color lbl = color.new(color.white, 15)
+    table.cell(dash, 0, 0, "ICC SWEEP TRACKER  |  " + timeframe.period, text_color = #FFD700, text_size = size.normal, bgcolor = color.new(#1E2A3A, 0), text_halign = text.align_center)
+    table.merge_cells(dash, 0, 0, 1, 0)
+    table.cell(dash, 0, 1, "Phase", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 1, phText, text_color = color.white, text_size = size.normal, bgcolor = phBg)
+    table.cell(dash, 0, 2, "Indication level", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 2, active ? nz2(dLvl) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 3, "LH / HL liquidity", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 3, active ? nz2(dLh) : "—", text_color = liqCol, text_size = size.normal)
+    table.cell(dash, 0, 4, "Invalid if close beyond", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 4, active ? nz2(dProt) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 5, "Stop", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 5, showRisk ? nz2(dSl) : "—", text_color = color.white, text_size = size.normal)
+    table.cell(dash, 0, 6, "Target (" + str.tostring(rr, "#.#") + "R)", text_color = lbl, text_size = size.normal)
+    table.cell(dash, 1, 6, showRisk ? nz2(dTp) : "—", text_color = color.white, text_size = size.normal)
+
+alertcondition(warnS or warnB, "Failed HH/LL (warning)", "{{ticker}} {{interval}}: Failed HH/LL warning.")
+alertcondition(chochS or chochB, "CHoCH", "{{ticker}} {{interval}}: CHoCH at the indication level.")
+alertcondition(sweepS or sweepB, "Liquidity swept", "{{ticker}} {{interval}}: Liquidity swept.")
+alertcondition(armedS or armedB, "ARMED", "{{ticker}} {{interval}}: Setup armed at the indication level.")
+alertcondition(fillS or fillB, "Entry", "{{ticker}} {{interval}}: Entry at the indication level.")
+alertcondition(exitS == 1 or exitB == 1, "Stop hit", "{{ticker}} {{interval}}: Stop hit.")
+alertcondition(exitS == 2 or exitB == 2, "Target hit", "{{ticker}} {{interval}}: Target hit.")
