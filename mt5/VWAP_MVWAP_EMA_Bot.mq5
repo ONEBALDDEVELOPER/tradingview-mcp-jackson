@@ -17,10 +17,10 @@ enum ENUM_LOT_MODE   { LOT_FIXED, LOT_RISK_PERCENT };
 
 //--- Strategy (from Pine)
 input group "=== Strategy (from Pine script) ==="
-input int    InpVwapLen      = 21;     // VWAP Length (EMA of VWAP)
+input int    InpVwapLen      = 1;      // VWAP Length (EMA of VWAP)
 input int    InpMvwapLen     = 21;     // MVWAP Length (EMA of VWAP)
-input int    InpEma1Len      = 11;     // EMA 1 Length (close)
-input int    InpEma2Len      = 22;     // EMA 2 Length (close)
+input int    InpEma1Len      = 7;      // EMA 1 Length (close)
+input int    InpEma2Len      = 25;     // EMA 2 Length (close)
 input ENUM_DIR_MODE InpDirection = DIR_BOTH; // Trade direction
 input bool   InpCloseOnOpposite = true;// Close position on opposite signal
 
@@ -32,18 +32,18 @@ input double InpRsiLimit     = 65;     // RSI limit (risky above)
 
 //--- Stop loss / take profit
 input group "=== Stop Loss / Take Profit ==="
-input ENUM_SL_MODE InpSlMode = SL_ATR_MULT; // Stop loss mode
+input ENUM_SL_MODE InpSlMode = SL_FIXED_PIPS; // Stop loss mode
 input double InpSlPips       = 30.0;   // SL: fixed distance in pips
-input double InpSlAtrMult    = 1.0;    // SL: ATR multiplier
+input double InpSlAtrMult    = 1.5;    // SL: ATR multiplier
 input ENUM_TP_MODE InpTpMode = TP_RISK_REWARD;// Take profit mode
 input double InpTpPips       = 60.0;   // TP: fixed distance in pips
-input double InpTpRR         = 5.0;    // TP: reward:risk ratio
+input double InpTpRR         = 2.0;    // TP: reward:risk ratio
 input double InpTpAtrMult    = 3.0;    // TP: ATR multiplier
 input int    InpAtrPeriod    = 14;     // ATR period
 
 //--- Position size
 input group "=== Position Size ==="
-input ENUM_LOT_MODE InpLotMode = LOT_RISK_PERCENT; // Lot mode
+input ENUM_LOT_MODE InpLotMode = LOT_FIXED; // Lot mode
 input double InpLots         = 0.10;   // Fixed lots
 input double InpRiskPercent  = 1.0;    // Risk % of equity per trade
 
@@ -63,7 +63,7 @@ input double InpEmaSpreadAtr = 0.3;    // |EMA1-EMA2| < this x ATR = consolidati
 input group "=== Filters & misc ==="
 input int    InpMaxSpreadPts = 0;      // Max spread in points (0 = off)
 input bool   InpUseTimeFilter= false;  // Restrict trading hours
-input int    InpStartHour    = 13;     // Start hour (server time)
+input int    InpStartHour    = 7;      // Start hour (server time)
 input int    InpEndHour      = 20;     // End hour (server time)
 input int    InpWarmupBars   = 300;    // Bars of history for VWAP/MVWAP warmup
 input long   InpMagic        = 20250101; // Magic number
